@@ -43,14 +43,14 @@ streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headl
 ## Upload and use
 
 In **Upload**, choose a Khan Bank `.xlsx` statement (max 20 MB) and click
-**Import**. On the local app, source files are kept in `imported_statements/`
-and can be re-imported. Render's filesystem is temporary, so it does not retain
-uploaded workbooks. Duplicates are not added to the transaction ledger; each
-import records which transactions appeared in that statement. New statements
-append to the shared database. In **Reports**, choose one imported statement
-or the combined history to analyze it. Older imports created before this
-statement-link tracking can only be analyzed using the transactions first added
-by each import.
+**Import**. The workbook is saved in the database so it remains available on
+Render and can be re-imported. Older Render imports from before workbook
+storage was added need the original file selected once to reconnect it. New
+statements append to the shared database; duplicate transactions are not added.
+Each import records which transactions appeared in that statement. In
+**Reports**, choose one imported statement or the combined history to analyze
+it. Older imports created before statement-link tracking can only be analyzed
+using the transactions first added by each import.
 
 ## Add another bank
 
@@ -71,7 +71,9 @@ statement re-imports.
 
 ## Privacy
 
-Statements and backups stay local unless you click the optional AI analysis.
+Statements, including the original uploaded Excel workbooks, are stored in the
+configured database and are not encrypted. Backups are local. Unless you click
+the optional AI analysis, no transaction data is sent to OpenAI.
 It sends selected-period expense dates, amounts, descriptions, and category
 names to OpenAI; account/balance columns and the workbook are excluded, but
 details inside descriptions may be sent. Provider data terms apply. Enable AI

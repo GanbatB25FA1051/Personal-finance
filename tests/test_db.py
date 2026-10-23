@@ -91,6 +91,13 @@ def test_postgres_adapter_translates_placeholders_and_returns_ids() -> None:
     )
     assert 'RETURNING id' not in relation_query
     assert 'VALUES (%s, %s)' in relation_query
+    file_query = _PostgresConnection._prepare(
+        '''INSERT INTO import_files(import_id, file_data, file_hash)
+           VALUES (?, ?, ?) ON CONFLICT(import_id) DO UPDATE SET
+           file_data=excluded.file_data RETURNING import_id'''
+    )
+    assert 'RETURNING id' not in file_query
+    assert 'VALUES (%s, %s, %s)' in file_query
 
 
 def test_postgres_connection_context_keeps_connection_open() -> None:

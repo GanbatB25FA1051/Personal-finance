@@ -48,6 +48,11 @@ def import_statement(conn: sqlite3.Connection, file: str | Path | bytes | Binary
             VALUES (?,?,?,?,?,?)''', (account_id, filename, digest, statement.period_start, statement.period_end,
                                      datetime.now().isoformat(timespec='seconds')))
         import_id = cursor.lastrowid
+        conn.execute(
+            '''INSERT INTO import_files(import_id, file_data, file_hash)
+               VALUES (?, ?, ?) RETURNING import_id''',
+            (import_id, data, digest),
+        )
         new_ids, new_rows = [], []
         fee_category = conn.execute("SELECT id FROM categories WHERE name='Bank Fees & Charges'").fetchone()[0]
         for row in statement.rows:

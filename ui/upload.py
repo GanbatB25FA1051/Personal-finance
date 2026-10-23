@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core.db import backup_db, is_postgres, read_sql_query
+from core.db import backup_db, read_sql_query
 from core.ingest import import_statement
 from core.models import ImportResult
 from ui import translate_import_message
@@ -24,23 +24,7 @@ def _import_and_archive(
     """Import a statement and retain its workbook for later re-import."""
     backup_db(str(APP_DIR / 'finance.db'), str(APP_DIR / 'backups'))
     result = import_statement(conn, data, filename)
-    if is_postgres(conn):
-        st.info(
-            'Хуулгыг Neon өгөгдлийн санд хадгаллаа. Эх Excel файл Render-ийн '
-            'түр файлын системд архивлагдахгүй тул дахин оруулахдаа эх файлаа '
-            'дахин сонгоно уу.'
-        )
-        return result
-    file_hash = hashlib.sha256(data).hexdigest()
-    archive_path = STATEMENT_ARCHIVE / f'{file_hash}.xlsx'
-    try:
-        STATEMENT_ARCHIVE.mkdir(parents=True, exist_ok=True)
-        archive_path.write_bytes(data)
-    except OSError:
-        st.warning(
-            'Хуулгыг өгөгдлийн санд оруулсан боловч дахин ашиглах файлыг '
-            'хадгалж чадсангүй. Дискний зай, хавтас руу бичих эрхийг шалгана уу.'
-        )
+    _archive_statement(data, hashlib.sha256(data).hexdigest())
     return result
 
 
@@ -49,7 +33,8 @@ def render(conn: sqlite3.Connection) -> None:
     st.title('Банкны хуулга оруулах')
     st.caption(
         'Шинэ хуулга өмнөх гүйлгээнүүдтэй нэгтгэгдэнэ. Давхардсан мөрийг '
-        'дахин нэмэхгүй; хуулга бүрийн тайланг Тайлан хэсгээс тусад нь сонгож болно.'
+        'дахин нэмэхгүй. Өмнөх хуулгаа дахин сонгох боломжтой бөгөөд хуулга '
+        'бүрийн тайланг Тайлан хэсгээс тусад нь харна.'
     )
     file = st.file_uploader(
         'ХААН Банкны хуулга (.xlsx, 20 МБ хүртэл)',
@@ -114,9 +99,12 @@ def render(conn: sqlite3.Connection) -> None:
     )
 
     history_rows = conn.execute(
-        '''SELECT id, filename, file_hash, period_start, period_end, imported_at
-           FROM imports
-           ORDER BY id DESC'''
+        '''SELECT i.id, i.filename, i.file_hash, i.period_start, i.period_end,
+                  i.imported_at,
+                  CASE WHEN f.import_id IS NULL THEN 0 ELSE 1 END AS stored_in_db
+           FROM imports AS i
+           LEFT JOIN import_files AS f ON f.import_id=i.id
+           ORDER BY i.id DESC'''
     ).fetchall()
     if not history_rows:
         return
@@ -130,7 +118,10 @@ def render(conn: sqlite3.Connection) -> None:
             and len(file_hash) == 64
             and all(character in '0123456789abcdef' for character in file_hash)
         )
-        exists = safe_hash and (STATEMENT_ARCHIVE / f'{file_hash}.xlsx').is_file()
+        archive_exists = (
+            safe_hash and (STATEMENT_ARCHIVE / f'{file_hash}.xlsx').is_file()
+        )
+        exists = bool(row['stored_in_db']) or archive_exists
         period = ' – '.join(
             value
             for value in (row['period_start'], row['period_end'])
@@ -150,22 +141,68 @@ def render(conn: sqlite3.Connection) -> None:
         list(history_options),
         key='reimport_statement_choice',
     )
+    selected_import = history_options[selected_label]
+    selected_hash = selected_import['file_hash']
+    selected_id = selected_import['id']
+    stored = conn.execute(
+        'SELECT file_data, file_hash FROM import_files WHERE import_id=?',
+        (selected_id,),
+    ).fetchone()
+    archive_path = STATEMENT_ARCHIVE / f'{selected_hash}.xlsx'
     if not archive_available[selected_label]:
         st.info(
-            'Энэ хуулгыг өмнө нь файл хэлбэрээр хадгалдаггүй байсан. '
-            'Дахин оруулахын тулд дээрээс эх файлыг компьютероосоо сонгоно уу.'
+            'Энэ өмнөх хуулгын Excel файл Render дээр хадгалагдаагүй байсан. '
+            'Эх файлыг нэг удаа сонгож энэ хуулгатай холбоно уу. Шинэ хуулга '
+            'нэмэх бол дээрх "Оруулах" хэсгийг ашиглана уу.'
         )
+        recovery_file = st.file_uploader(
+            'Өмнө оруулсан хуулгын эх Excel файлыг сонгох',
+            type=['xlsx'],
+            key=f'recover_statement_{selected_id}',
+        )
+        if st.button(
+            'Эх файлыг сонгосон хуулгатай холбох',
+            disabled=recovery_file is None,
+            key=f'attach_statement_{selected_id}',
+        ):
+            if recovery_file is not None:
+                data = recovery_file.getvalue()
+                if len(data) > MAX_FILE_SIZE:
+                    st.error('Файлын хэмжээ 20 МБ-ын хязгаараас хэтэрсэн байна.')
+                elif hashlib.sha256(data).hexdigest() != selected_hash:
+                    st.error(
+                        'Сонгосон файл энэ хуулгатай таарахгүй байна. '
+                        'Яг өмнө оруулсан Excel файлаа сонгоно уу.'
+                    )
+                else:
+                    conn.execute(
+                        '''INSERT INTO import_files(import_id, file_data, file_hash)
+                           VALUES (?, ?, ?)
+                           ON CONFLICT(import_id) DO UPDATE SET
+                               file_data=excluded.file_data,
+                               file_hash=excluded.file_hash
+                           RETURNING import_id''',
+                        (selected_id, data, selected_hash),
+                    )
+                    conn.commit()
+                    _archive_statement(data, selected_hash)
+                    st.success(
+                        'Эх файлыг хуулгатай холболоо. Одоо дахин оруулж болно.'
+                    )
+                    st.rerun()
     if st.button(
         'Сонгосон хуулгыг дахин оруулах',
         disabled=not archive_available[selected_label],
         key='reimport_statement',
     ):
-        selected_import = history_options[selected_label]
-        selected_hash = selected_import['file_hash']
-        archive_path = STATEMENT_ARCHIVE / f'{selected_hash}.xlsx'
         try:
-            data = archive_path.read_bytes()
-            if hashlib.sha256(data).hexdigest() != selected_hash:
+            if stored is not None:
+                data = stored['file_data']
+                stored_hash = stored['file_hash']
+            else:
+                data = archive_path.read_bytes()
+                stored_hash = hashlib.sha256(data).hexdigest()
+            if stored_hash != selected_hash or hashlib.sha256(data).hexdigest() != selected_hash:
                 st.error(
                     'Хадгалсан хуулгын бүрэн бүтэн байдал алдагдсан байна. '
                     'Эх файлыг компьютероосоо дахин сонгоно уу.'
@@ -190,3 +227,16 @@ def render(conn: sqlite3.Connection) -> None:
                 'Хадгалсан хуулгыг уншиж чадсангүй. '
                 'Файл устсан эсвэл унших эрхгүй байж болзошгүй.'
             )
+
+
+def _archive_statement(data: bytes, file_hash: str) -> None:
+    """Keep a local copy when the filesystem allows it."""
+    archive_path = STATEMENT_ARCHIVE / f'{file_hash}.xlsx'
+    try:
+        STATEMENT_ARCHIVE.mkdir(parents=True, exist_ok=True)
+        archive_path.write_bytes(data)
+    except OSError:
+        st.warning(
+            'Файл өгөгдлийн санд хадгалагдсан боловч локал архив үүсгэж '
+            'чадсангүй.'
+        )

@@ -14,6 +14,12 @@ def test_import_and_duplicates(tmp_path) -> None:
     init_db(conn)
     first = import_statement(conn, path, path.name)
     assert first.rows_new == 12
+    archived = conn.execute(
+        'SELECT file_data, file_hash FROM import_files WHERE import_id=?',
+        (first.import_id,),
+    ).fetchone()
+    assert archived['file_data'] == path.read_bytes()
+    assert archived['file_hash']
     first_links = conn.execute(
         'SELECT COUNT(*) FROM import_transactions WHERE import_id=?',
         (first.import_id,),
