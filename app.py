@@ -90,8 +90,8 @@ else:
             st.exception(exc)
 db_file = DB_FILE
 database_counts = conn.execute(
-    'SELECT (SELECT COUNT(*) FROM transactions), '
-    '(SELECT COUNT(*) FROM imports)'
+    'SELECT (SELECT COUNT(*) FROM transactions) AS transaction_count, '
+    '(SELECT COUNT(*) FROM imports) AS import_count'
 ).fetchone()
 st.sidebar.caption(
     (
