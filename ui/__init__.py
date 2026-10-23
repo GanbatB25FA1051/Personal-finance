@@ -20,6 +20,7 @@ CATEGORY_LABELS = {
     'Social & Entertainment': 'Нийгмийн үйл ажиллагаа, үзвэр үйлчилгээ',
     'Software & Digital Subscriptions': 'Программ хангамж, цахим захиалга',
     'Other expense': 'Бусад зарлага',
+    'Clothing & Footwear': 'Хувцас, гутал',
     'Bank Fees & Charges': 'Банкны шимтгэл, хураамж',
     'Transfers (own accounts)': 'Өөрийн данс хоорондын шилжүүлэг',
 }

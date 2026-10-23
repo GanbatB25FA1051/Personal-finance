@@ -21,8 +21,11 @@ def test_init_is_idempotent() -> None:
         init_db(conn)
         init_db(conn)
         counts = dict(conn.execute('SELECT type, COUNT(*) FROM categories GROUP BY type'))
-        assert counts == {'income': 5, 'expense': 9, 'fee': 1, 'transfer': 1}
-        assert conn.execute('SELECT SUM(is_default) FROM categories').fetchone()[0] == 16
+        assert counts == {'income': 5, 'expense': 10, 'fee': 1, 'transfer': 1}
+        assert conn.execute('SELECT SUM(is_default) FROM categories').fetchone()[0] == 17
+        assert conn.execute(
+            "SELECT type FROM categories WHERE name='Clothing & Footwear'"
+        ).fetchone()[0] == 'expense'
         assert conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1
         assert isinstance(conn.execute('SELECT * FROM categories').fetchone(), sqlite3.Row)
     finally:
@@ -136,7 +139,7 @@ def test_backup(tmp_path) -> None:
     target = backup_db(str(source), str(tmp_path / 'backups'))
     snapshot = get_conn(target)
     try:
-        assert snapshot.execute('SELECT COUNT(*) FROM categories').fetchone()[0] == 16
+        assert snapshot.execute('SELECT COUNT(*) FROM categories').fetchone()[0] == 17
     finally:
         snapshot.close()
 

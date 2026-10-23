@@ -54,6 +54,11 @@ its appended statements, or the full combined history. Older imports created
 before statement-link tracking can only be analyzed using the transactions
 first added by each import.
 
+The spending report shows the amount for each category and its percentage of
+total income in the selected period. Clothing and footwear is available as a
+default expense category. Uncategorized transactions remain visible in the
+breakdown; assigning categories is needed for a meaningful category report.
+
 ## Add another bank
 
 1. Copy `banks/khan_bank.py` to a new parser module.

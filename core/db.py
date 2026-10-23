@@ -21,6 +21,9 @@ DEFAULT_CATEGORIES = {
     'fee': ['Bank Fees & Charges'],
     'transfer': ['Transfers (own accounts)'],
 }
+ADDITIONAL_DEFAULT_CATEGORIES = {
+    'Clothing & Footwear': 'expense',
+}
 
 
 class _HybridRow(dict[str, Any]):
@@ -312,11 +315,17 @@ def init_db(conn: Any) -> None:
                ON CONFLICT(import_id, transaction_id) DO NOTHING
                RETURNING import_id'''
         )
-        if conn.execute('SELECT COUNT(*) FROM categories').fetchone()[0] == 0:
-            conn.executemany(
-                'INSERT INTO categories(name, type, is_default) VALUES (?, ?, 1)',
-                [(name, kind) for kind, names in DEFAULT_CATEGORIES.items() for name in names],
-            )
+        default_categories = [
+            (name, kind)
+            for kind, names in DEFAULT_CATEGORIES.items()
+            for name in names
+        ]
+        default_categories.extend(ADDITIONAL_DEFAULT_CATEGORIES.items())
+        conn.executemany(
+            '''INSERT INTO categories(name, type, is_default) VALUES (?, ?, 1)
+               ON CONFLICT(name) DO NOTHING''',
+            default_categories,
+        )
 
 
 def backup_db(path: str = 'finance.db', folder: str = 'backups') -> str | None:

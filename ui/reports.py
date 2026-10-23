@@ -140,19 +140,40 @@ def _monthly_summary(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _spending_by_category(data: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate filtered outgoing non-transfer transactions."""
+    """Aggregate outgoing transactions with their share of total income."""
+    income_minor = int(
+        data.loc[
+            (data['amount'] > 0) & (data['category_type'] != 'transfer'),
+            'amount',
+        ].sum()
+    )
+    return _spending_by_category_with_income(data, income_minor)
+
+
+def _spending_by_category_with_income(
+    data: pd.DataFrame,
+    income_minor: int,
+) -> pd.DataFrame:
+    """Aggregate spending and calculate each category's share of income."""
     expenses = data[
         (data['amount'] < 0) & (data['category_type'] != 'transfer')
     ].copy()
     if expenses.empty:
-        return pd.DataFrame(columns=['category', 'total'])
+        return pd.DataFrame(
+            columns=['category', 'total', 'income_share_pct']
+        )
     expenses['total_minor'] = -expenses['amount']
     spending = expenses.groupby('category', as_index=False).agg(
         total_minor=('total_minor', 'sum')
     )
     spending['total'] = spending['total_minor'] / 100
+    spending['income_share_pct'] = (
+        spending['total_minor'] / income_minor * 100
+        if income_minor > 0
+        else None
+    )
     return (
-        spending[['category', 'total']]
+        spending[['category', 'total', 'income_share_pct']]
         .sort_values(['total', 'category'], ascending=[False, True])
         .reset_index(drop=True)
     )
@@ -198,7 +219,8 @@ def _show_insights(
     else:
         latest = monthly.iloc[-1]
         st.write(
-            f"Сүүлийн сарын цэвэр орлого: **{latest['net']:,.2f} ₮** "
+            f"Сүүлийн сарын орлогоос зарлага хассан үлдэгдэл: "
+            f"**{latest['net']:,.2f} ₮** "
             f"(орлого {latest['income']:,.2f} ₮, зарлага "
             f"{latest['expense']:,.2f} ₮)."
         )
@@ -359,9 +381,24 @@ def render(conn: sqlite3.Connection) -> None:
         st.info('Сонгосон шүүлтүүрт тохирох гүйлгээ алга.')
         return
 
+    income_data = _load_dashboard_data(
+        conn,
+        start.isoformat(),
+        end.isoformat(),
+        ['Бүгд'],
+        'Бүгд',
+        import_id=selected_import_id,
+    )
+    total_income_minor = int(
+        income_data.loc[
+            (income_data['amount'] > 0)
+            & (income_data['category_type'] != 'transfer'),
+            'amount',
+        ].sum()
+    )
     eligible = data[data['category_type'] != 'transfer']
     monthly = _monthly_summary(data)
-    spending = _spending_by_category(data)
+    spending = _spending_by_category_with_income(data, total_income_minor)
     merchants = _top_merchants(data)
     fees_minor = int(
         -data.loc[
@@ -400,10 +437,23 @@ def render(conn: sqlite3.Connection) -> None:
             total_income = int(eligible['amount'].clip(lower=0).sum())
             total_expense = int(-eligible['amount'].clip(upper=0).sum())
             cols = st.columns(4)
-            cols[0].metric('Орлого', _format_minor(total_income))
+            cols[0].metric('Нийт орлого', _format_minor(total_income_minor))
             cols[1].metric('Зарлага', _format_minor(total_expense))
-            cols[2].metric('Цэвэр орлого', _format_minor(total_income - total_expense))
-            cols[3].metric('Банкны шимтгэл', _format_minor(fees_minor))
+            cols[2].metric(
+                'Орлогоос зарлага хассан үлдэгдэл',
+                _format_minor(total_income_minor - total_expense),
+            )
+            cols[3].metric(
+                'Орлогын зарцуулалт',
+                f'{total_expense / total_income_minor * 100:,.1f}%'
+                if total_income_minor > 0
+                else '—',
+                help='Сонгосон хугацааны нийт орлоготой харьцуулсан зарлага.',
+            )
+            st.caption(
+                f'Банкны шимтгэл: {_format_minor(fees_minor)}. '
+                'Шилжүүлгийг орлого, зарлагын тооцоонд оруулаагүй.'
+            )
             monthly_chart = monthly.set_index('month')[
                 ['income', 'expense']
             ].rename(columns={'income': 'Орлого', 'expense': 'Зарлага'})
@@ -416,7 +466,10 @@ def render(conn: sqlite3.Connection) -> None:
                     'month': 'Сар',
                     'income': st.column_config.NumberColumn('Орлого (₮)', format='%,.2f'),
                     'expense': st.column_config.NumberColumn('Зарлага (₮)', format='%,.2f'),
-                    'net': st.column_config.NumberColumn('Цэвэр (₮)', format='%,.2f'),
+                    'net': st.column_config.NumberColumn(
+                        'Орлогоос зарлага хассан үлдэгдэл (₮)',
+                        format='%,.2f',
+                    ),
                 },
             )
 
@@ -437,8 +490,17 @@ def render(conn: sqlite3.Connection) -> None:
                         'Нийт зарлага (₮)',
                         format='%,.2f',
                     ),
+                    'income_share_pct': st.column_config.NumberColumn(
+                        'Нийт орлогын зарцуулалт (%)',
+                        format='%,.1f',
+                    ),
                 },
             )
+            if total_income_minor <= 0:
+                st.info(
+                    'Сонгосон хугацаанд орлогын гүйлгээ алга тул ангилал '
+                    'бүрийн орлогод эзлэх хувийг тооцох боломжгүй байна.'
+                )
             category_months = data[
                 (data['amount'] < 0) & (data['category_type'] != 'transfer')
             ].copy()

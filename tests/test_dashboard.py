@@ -5,6 +5,7 @@ from ui.reports import (
     _load_dashboard_data,
     _monthly_summary,
     _spending_by_category,
+    _spending_by_category_with_income,
     _top_merchants,
 )
 
@@ -48,9 +49,34 @@ def test_dashboard_aggregates_exclude_transfers_and_keep_fees_as_expense() -> No
         spending = _spending_by_category(data)
         assert spending.iloc[0]['total'] == 300.0
         assert 'Transfers (own accounts)' not in spending['category'].tolist()
+        shares = spending.set_index('category')['income_share_pct']
+        assert shares['Groceries / Food'] == 30.0
+        assert shares['Bank Fees & Charges'] == 1.0
+        assert shares['Ангилалгүй'] == 5.0
         merchants = _top_merchants(data)
         assert merchants.iloc[0]['merchant'] == 'Market'
         assert int(merchants.iloc[0]['count']) == 2
+    finally:
+        conn.close()
+
+
+def test_spending_share_uses_full_income_and_handles_no_income() -> None:
+    conn = _dashboard_connection()
+    try:
+        data = _load_dashboard_data(
+            conn,
+            '2026-01-01',
+            '2026-02-28',
+            ['Бүгд'],
+            'Бүгд',
+        )
+        spending = _spending_by_category_with_income(data, 2_000_000)
+        shares = spending.set_index('category')['income_share_pct']
+        assert shares['Groceries / Food'] == 1.5
+        assert shares['Bank Fees & Charges'] == 0.05
+
+        no_income = _spending_by_category_with_income(data, 0)
+        assert no_income['income_share_pct'].isna().all()
     finally:
         conn.close()
 
