@@ -12,6 +12,7 @@ TABLES = (
     'merchant_rules',
     'imports',
     'import_files',
+    'import_extensions',
     'transactions',
     'import_transactions',
     'ai_analysis_runs',
@@ -69,6 +70,10 @@ def migrate(source_path: str) -> dict[str, int]:
                 )
             elif table == 'import_files':
                 conflict = 'ON CONFLICT(import_id) DO NOTHING'
+            elif table == 'import_extensions':
+                conflict = (
+                    'ON CONFLICT(parent_import_id, child_import_id) DO NOTHING'
+                )
             else:
                 conflict = 'ON CONFLICT(id) DO NOTHING'
             statement = (
@@ -78,6 +83,8 @@ def migrate(source_path: str) -> dict[str, int]:
             if table == 'import_transactions':
                 statement += ' RETURNING import_id'
             elif table == 'import_files':
+                statement += ' RETURNING import_id'
+            elif table == 'import_extensions':
                 statement += ' RETURNING import_id'
             for row in rows:
                 destination.execute(statement, tuple(row)).fetchone()
@@ -91,7 +98,11 @@ def migrate(source_path: str) -> dict[str, int]:
                     f'Migration verification failed for table {table}: '
                     f'{source_counts[table]} source rows, {target_count} target rows.'
                 )
-            if table not in ('import_transactions', 'import_files'):
+            if table not in (
+                'import_transactions',
+                'import_files',
+                'import_extensions',
+            ):
                 destination.execute(
                     f'''SELECT setval(
                             pg_get_serial_sequence('{table}', 'id'),

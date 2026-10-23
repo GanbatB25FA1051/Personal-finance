@@ -213,6 +213,12 @@ def init_db(conn: Any) -> None:
             file_data BLOB NOT NULL,
             file_hash TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS import_extensions (
+            parent_import_id INTEGER NOT NULL REFERENCES imports(id),
+            child_import_id INTEGER NOT NULL UNIQUE REFERENCES imports(id),
+            PRIMARY KEY (parent_import_id, child_import_id),
+            CHECK (parent_import_id != child_import_id)
+        );
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY, name TEXT UNIQUE,
             type TEXT CHECK(type IN ('income','expense','transfer','fee')),

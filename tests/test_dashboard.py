@@ -90,12 +90,29 @@ def test_dashboard_can_analyze_one_import_including_overlapping_rows() -> None:
             '''INSERT INTO imports(filename, rows_parsed, imported_at)
                VALUES ('second.xlsx', 2, '2026-02-01')'''
         ).lastrowid
+        conn.execute(
+            '''INSERT INTO import_extensions(parent_import_id, child_import_id)
+               VALUES (?, ?)''',
+            (first_import, second_import),
+        )
+        third_import = conn.execute(
+            '''INSERT INTO imports(filename, rows_parsed, imported_at)
+               VALUES ('third.xlsx', 1, '2026-03-01')'''
+        ).lastrowid
+        conn.execute(
+            '''INSERT INTO import_extensions(parent_import_id, child_import_id)
+               VALUES (?, ?)''',
+            (second_import, third_import),
+        )
         first_transaction = conn.execute(
             "SELECT id FROM transactions WHERE raw_description='market' "
             "AND txn_datetime LIKE '2026-01-02%'"
         ).fetchone()[0]
         second_transaction = conn.execute(
             "SELECT id FROM transactions WHERE txn_datetime LIKE '2026-02-01%'"
+        ).fetchone()[0]
+        third_transaction = conn.execute(
+            "SELECT id FROM transactions WHERE txn_datetime LIKE '2026-01-03%'"
         ).fetchone()[0]
         conn.executemany(
             '''INSERT INTO import_transactions(import_id, transaction_id)
@@ -104,6 +121,7 @@ def test_dashboard_can_analyze_one_import_including_overlapping_rows() -> None:
                 (first_import, first_transaction),
                 (second_import, first_transaction),
                 (second_import, second_transaction),
+                (third_import, third_transaction),
             ],
         )
         conn.commit()
@@ -114,9 +132,13 @@ def test_dashboard_can_analyze_one_import_including_overlapping_rows() -> None:
             '2026-02-28',
             ['Бүгд'],
             'Бүгд',
-            import_id=second_import,
+            import_id=first_import,
         )
 
-        assert set(selected['id']) == {first_transaction, second_transaction}
+        assert set(selected['id']) == {
+            first_transaction,
+            second_transaction,
+            third_transaction,
+        }
     finally:
         conn.close()

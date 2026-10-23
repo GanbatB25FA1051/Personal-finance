@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from core.db import backup_db, read_sql_query
-from core.ingest import import_statement
+from core.ingest import import_statement, statement_account_number
 from core.models import ImportResult
 from ui import translate_import_message
 
@@ -127,7 +127,7 @@ def render(conn: sqlite3.Connection) -> None:
             for value in (row['period_start'], row['period_end'])
             if value
         ) or 'хугацаа тодорхойгүй'
-        status = 'архивт хадгалсан' if exists else 'файлыг дахин сонгох шаардлагатай'
+        status = 'файл хадгалсан' if exists else 'эх файл хадгалаагүй'
         label = (
             f"#{row['id']} · {row['imported_at']} · "
             f"{row['filename']} · {period} · {status}"
@@ -135,15 +135,76 @@ def render(conn: sqlite3.Connection) -> None:
         history_options[label] = row
         archive_available[label] = bool(exists)
 
-    st.subheader('Өмнө оруулсан хуулгыг дахин оруулах')
+    st.subheader('Өмнө оруулсан хуулгыг сонгох')
     selected_label = st.selectbox(
-        'Дахин оруулах хуулгаа сонгоно уу',
+        'Суурь хуулгаа сонгоно уу',
         list(history_options),
         key='reimport_statement_choice',
     )
     selected_import = history_options[selected_label]
     selected_hash = selected_import['file_hash']
     selected_id = selected_import['id']
+    st.subheader('Сонгосон хуулгад нэмэлт хуулга залгах')
+    st.caption(
+        'Шинэ хугацааны хуулгаа сонгоно уу. Нэг дансны хуулгуудыг '
+        'сонгосон хуулгын бүлэгт нэмнэ; давхардсан гүйлгээг дахин нэмэхгүй.'
+    )
+    extension_file = st.file_uploader(
+        'Нэмэлт банкны хуулга (.xlsx, 20 МБ хүртэл)',
+        type=['xlsx'],
+        key=f'extension_file_{selected_id}',
+    )
+    if st.button(
+        'Сонгосон хуулгад нэмэх',
+        disabled=extension_file is None,
+        key=f'append_statement_{selected_id}',
+    ):
+        if extension_file is not None:
+            extension_data = extension_file.getvalue()
+            if len(extension_data) > MAX_FILE_SIZE:
+                st.error('Файлын хэмжээ 20 МБ-ын хязгаараас хэтэрсэн байна.')
+            else:
+                try:
+                    new_account = statement_account_number(extension_data)
+                    target = conn.execute(
+                        '''SELECT a.account_number
+                           FROM imports AS i
+                           JOIN accounts AS a ON a.id=i.account_id
+                           WHERE i.id=?''',
+                        (selected_id,),
+                    ).fetchone()
+                    if target is None:
+                        st.error(
+                            'Сонгосон хуулгын дансны мэдээлэл олдсонгүй. '
+                            'Өөр хуулга сонгоно уу.'
+                        )
+                    elif new_account != target['account_number']:
+                        st.error(
+                            'Нэмэлт файл сонгосон хуулгын данстай таарахгүй байна. '
+                            'Ижил дансны хуулга сонгоно уу.'
+                        )
+                    else:
+                        extension_result = _import_and_archive(
+                            conn,
+                            extension_data,
+                            extension_file.name,
+                        )
+                        conn.execute(
+                            '''INSERT INTO import_extensions(
+                                   parent_import_id, child_import_id
+                               ) VALUES (?, ?) RETURNING child_import_id''',
+                            (selected_id, extension_result.import_id),
+                        )
+                        conn.commit()
+                        st.success(
+                            f'Нэмэлт хуулга нэмэгдлээ: '
+                            f'{extension_result.rows_new} шинэ, '
+                            f'{extension_result.rows_duplicate} давхардсан. '
+                            'Тайлан хэсэгт сонгосон хуулга болон нэмэлтүүдийг '
+                            'хамтад нь шинжилнэ.'
+                        )
+                except ValueError as exc:
+                    st.error(translate_import_message(str(exc)))
     stored = conn.execute(
         'SELECT file_data, file_hash FROM import_files WHERE import_id=?',
         (selected_id,),

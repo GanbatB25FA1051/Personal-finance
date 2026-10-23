@@ -48,9 +48,11 @@ Render and can be re-imported. Older Render imports from before workbook
 storage was added need the original file selected once to reconnect it. New
 statements append to the shared database; duplicate transactions are not added.
 Each import records which transactions appeared in that statement. In
-**Reports**, choose one imported statement or the combined history to analyze
-it. Older imports created before statement-link tracking can only be analyzed
-using the transactions first added by each import.
+**Upload**, choose an existing statement and add another statement for the same
+account to it. **Reports** then analyzes the selected statement together with
+its appended statements, or the full combined history. Older imports created
+before statement-link tracking can only be analyzed using the transactions
+first added by each import.
 
 ## Add another bank
 

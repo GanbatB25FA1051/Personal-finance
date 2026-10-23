@@ -2,7 +2,7 @@
 import pytest
 from openpyxl import load_workbook
 from core.db import get_conn, init_db
-from core.ingest import import_statement
+from core.ingest import import_statement, statement_account_number
 from core.classify import set_category
 from tests.make_fixture import make_fixture
 
@@ -10,6 +10,7 @@ from tests.make_fixture import make_fixture
 def test_import_and_duplicates(tmp_path) -> None:
     path = tmp_path / 'test.xlsx'
     make_fixture(path)
+    assert statement_account_number(path.read_bytes()) == 'MN030005005000000001'
     conn = get_conn(':memory:')
     init_db(conn)
     first = import_statement(conn, path, path.name)

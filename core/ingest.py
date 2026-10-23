@@ -10,6 +10,28 @@ from banks.base import detect_parser
 from core.models import ImportResult
 
 
+def statement_account_number(data: bytes) -> str:
+    """Read the account number from a supported workbook."""
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:
+        raise ValueError(
+            'Unrecognized file/bank format: please select a valid .xlsx statement'
+        ) from exc
+    try:
+        parser = detect_parser(wb)
+        if parser is None:
+            raise ValueError('Unrecognized file/bank format')
+        statement = parser.parse(wb)
+    finally:
+        wb.close()
+    if not statement.account_number or not statement.rows:
+        raise ValueError(
+            'Statement has no account number or readable transaction rows'
+        )
+    return statement.account_number
+
+
 def import_statement(conn: sqlite3.Connection, file: str | Path | bytes | BinaryIO,
                      filename: str) -> ImportResult:
     """Import one workbook atomically; duplicate rows remain untouched."""

@@ -38,8 +38,18 @@ def _load_dashboard_data(
     if import_id is not None:
         clauses.append(
             '''EXISTS (
-                   SELECT 1 FROM import_transactions AS it
-                   WHERE it.transaction_id=t.id AND it.import_id=?
+                   WITH RECURSIVE statement_scope(id) AS (
+                       SELECT ?
+                       UNION
+                       SELECT extension.child_import_id
+                       FROM import_extensions AS extension
+                       JOIN statement_scope AS parent
+                         ON extension.parent_import_id=parent.id
+                   )
+                   SELECT 1
+                   FROM import_transactions AS it
+                   JOIN statement_scope AS scope ON scope.id=it.import_id
+                   WHERE it.transaction_id=t.id
                )'''
         )
         params.append(import_id)
@@ -230,8 +240,23 @@ def render(conn: sqlite3.Connection) -> None:
         period = ' – '.join(
             value for value in (row['period_start'], row['period_end']) if value
         ) or 'хугацаа тодорхойгүй'
+        extension_count = conn.execute(
+            '''WITH RECURSIVE statement_scope(id) AS (
+                   SELECT ?
+                   UNION
+                   SELECT extension.child_import_id
+                   FROM import_extensions AS extension
+                   JOIN statement_scope AS parent
+                     ON extension.parent_import_id=parent.id
+               )
+               SELECT COUNT(*) - 1 FROM statement_scope''',
+            (row['id'],),
+        ).fetchone()[0]
+        extension_label = (
+            f' · {extension_count} нэмэлт' if extension_count else ''
+        )
         label = (
-            f"#{row['id']} · {row['filename']} · {period} · "
+            f"#{row['id']} · {row['filename']} · {period}{extension_label} · "
             f"{row['imported_at']}"
         )
         import_options[label] = row['id']
@@ -248,10 +273,18 @@ def render(conn: sqlite3.Connection) -> None:
         ).fetchone()
     else:
         bounds = conn.execute(
-            '''SELECT MIN(t.txn_datetime), MAX(t.txn_datetime)
+            '''WITH RECURSIVE statement_scope(id) AS (
+                   SELECT ?
+                   UNION
+                   SELECT extension.child_import_id
+                   FROM import_extensions AS extension
+                   JOIN statement_scope AS parent
+                     ON extension.parent_import_id=parent.id
+               )
+               SELECT MIN(t.txn_datetime), MAX(t.txn_datetime)
                FROM transactions AS t
                JOIN import_transactions AS it ON it.transaction_id=t.id
-               WHERE it.import_id=?''',
+               JOIN statement_scope AS scope ON scope.id=it.import_id''',
             (selected_import_id,),
         ).fetchone()
         selected_import = import_details[selected_import_id]
