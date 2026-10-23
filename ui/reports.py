@@ -39,7 +39,7 @@ def _load_dashboard_data(
         clauses.append(
             '''EXISTS (
                    WITH RECURSIVE statement_scope(id) AS (
-                       SELECT ?
+                       SELECT CAST(? AS INTEGER)
                        UNION
                        SELECT extension.child_import_id
                        FROM import_extensions AS extension
@@ -242,7 +242,7 @@ def render(conn: sqlite3.Connection) -> None:
         ) or 'хугацаа тодорхойгүй'
         extension_count = conn.execute(
             '''WITH RECURSIVE statement_scope(id) AS (
-                   SELECT ?
+                   SELECT CAST(? AS INTEGER)
                    UNION
                    SELECT extension.child_import_id
                    FROM import_extensions AS extension
@@ -274,7 +274,7 @@ def render(conn: sqlite3.Connection) -> None:
     else:
         bounds = conn.execute(
             '''WITH RECURSIVE statement_scope(id) AS (
-                   SELECT ?
+                   SELECT CAST(? AS INTEGER)
                    UNION
                    SELECT extension.child_import_id
                    FROM import_extensions AS extension
