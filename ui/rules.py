@@ -11,6 +11,7 @@ from core.classify import (
     classify_remaining,
     learn_rules_from_manual,
 )
+from core.db import read_sql_query
 from ui import (
     DIRECTION_LABELS,
     MATCH_TYPE_LABELS,
@@ -85,7 +86,7 @@ def render(conn: sqlite3.Connection) -> None:
             except ValueError as exc:
                 st.error(translate_rule_error(str(exc)))
 
-    rules = pd.read_sql_query(
+    rules = read_sql_query(
         '''SELECT r.id,
                   r.match_type,
                   r.pattern,

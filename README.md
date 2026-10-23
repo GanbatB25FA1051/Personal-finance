@@ -16,6 +16,30 @@ python -m pip install -r requirements.txt
 python -m streamlit run app.py --server.headless false --browser.gatherUsageStats false
 ```
 
+## Prepare a Render deployment
+
+The app uses local SQLite when `DATABASE_URL` is not set. For Render, configure
+`DATABASE_URL` with a Neon PostgreSQL connection URL and set
+`FINANCE_APP_PASSWORD` as a Render secret. Never commit either value.
+
+To migrate an existing local database, install the requirements and set
+`DATABASE_URL` in the local PowerShell session using the private connection
+URL from Neon, then run:
+
+```powershell
+python -m core.migrate_to_neon --source finance.db
+```
+
+The migration stops if Neon already contains application data. It copies the
+existing SQLite records and verifies table row counts. Keep the original
+`finance.db` and a backup until you confirm the deployed data is correct.
+
+Render's Streamlit start command is:
+
+```text
+streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
+```
+
 ## Upload and use
 
 In **Upload**, choose a Khan Bank `.xlsx` statement (max 20 MB) and click

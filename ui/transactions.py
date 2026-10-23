@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from core.classify import set_category
+from core.db import read_sql_query
 from core.models import to_minor
 from ui import DIRECTION_LABELS, category_label, category_name
 
@@ -179,7 +180,7 @@ def render(conn: sqlite3.Connection) -> None:
         st.session_state['transactions_filter_key'] = filter_key
         st.session_state['transactions_limit'] = 500
     limit = st.session_state.get('transactions_limit', 500)
-    result = pd.read_sql_query(query, conn, params=[*params, limit])
+    result = read_sql_query(query, conn, params=[*params, limit])
 
     if result.empty:
         st.info('Сонгосон шүүлтүүрт тохирох гүйлгээ алга.')

@@ -1,19 +1,38 @@
 """Local personal finance application."""
+import hmac
 import importlib
-import sqlite3
+import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 import streamlit as st
-from core.db import get_conn, init_db, backup_db
+from core.db import get_conn, init_db, backup_db, is_postgres
 
 st.set_page_config(page_title='Миний санхүү', layout='wide')
+
+if not st.session_state.get('authenticated', False):
+    st.title('Нэвтрэх')
+    app_password = os.environ.get('FINANCE_APP_PASSWORD', '')
+    if not app_password:
+        st.error('Серверийн нууц үг тохируулаагүй байна.')
+        st.stop()
+    with st.form('login_form'):
+        entered_password = st.text_input('Нууц үг', type='password')
+        submitted = st.form_submit_button('Нэвтрэх')
+    if submitted:
+        if hmac.compare_digest(entered_password, app_password):
+            st.session_state['authenticated'] = True
+            st.rerun()
+        st.error('Нууц үг буруу байна.')
+    st.stop()
+
 APP_DIR = Path(__file__).resolve().parent
 DB_FILE = APP_DIR / 'finance.db'
 BACKUP_DIR = APP_DIR / 'backups'
 
 
 @st.cache_resource
-def connection() -> sqlite3.Connection:
+def connection() -> Any:
     """Initialize one shared local database connection."""
     conn = get_conn(str(DB_FILE))
     init_db(conn)
@@ -51,6 +70,9 @@ page = st.sidebar.radio(
 )
 if count:
     st.sidebar.markdown(f':red[Ангилаагүй {count} гүйлгээ байна]')
+if st.sidebar.button('Гарах'):
+    st.session_state['authenticated'] = False
+    st.rerun()
 try:
     module = importlib.import_module('ui.' + page.lower())
 except ModuleNotFoundError as exc:
@@ -72,24 +94,33 @@ database_counts = conn.execute(
     '(SELECT COUNT(*) FROM imports)'
 ).fetchone()
 st.sidebar.caption(
-    f"Өгөгдлийн сан: {db_file.stat().st_size / 1024:,.1f} КБ · "
-    f"{database_counts[0]:,} гүйлгээ · {database_counts[1]:,} хуулга"
-    if db_file.exists()
-    else 'Өгөгдлийн сан: хоосон'
-)
-backups = sorted(BACKUP_DIR.glob('finance_*.db'), key=lambda p: p.stat().st_mtime, reverse=True)
-st.sidebar.caption(
-    'Сүүлд нөөцөлсөн: '
-    + (
-        datetime.fromtimestamp(backups[0].stat().st_mtime).strftime('%Y-%m-%d %H:%M')
-        if backups
-        else 'хараахан нөөцлөөгүй'
+    (
+        'Өгөгдлийн сан: Neon PostgreSQL · '
+        f'{database_counts[0]:,} гүйлгээ · {database_counts[1]:,} хуулга'
+    )
+    if is_postgres(conn)
+    else (
+        f"Өгөгдлийн сан: {db_file.stat().st_size / 1024:,.1f} КБ · "
+        f"{database_counts[0]:,} гүйлгээ · {database_counts[1]:,} хуулга"
+        if db_file.exists()
+        else 'Өгөгдлийн сан: хоосон'
     )
 )
-if st.sidebar.button('Одоо нөөцлөх'):
-    target = backup_db(str(DB_FILE), str(BACKUP_DIR))
-    st.sidebar.success(
-        'Нөөц амжилттай хадгалагдлаа.'
-        if target
-        else 'Нөөцлөх өгөгдлийн сан алга.'
+if not is_postgres(conn):
+    backups = sorted(BACKUP_DIR.glob('finance_*.db'), key=lambda p: p.stat().st_mtime, reverse=True)
+    st.sidebar.caption(
+        'Сүүлд нөөцөлсөн: '
+        + (
+            datetime.fromtimestamp(backups[0].stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+            if backups
+            else 'хараахан нөөцлөөгүй'
+        )
     )
+    if st.sidebar.button('Одоо нөөцлөх'):
+        target = backup_db(str(DB_FILE), str(BACKUP_DIR))
+        st.sidebar.success(
+            'Нөөц амжилттай хадгалагдлаа.'
+            if target
+            else 'Нөөцлөх өгөгдлийн сан алга.'
+        )
+conn.commit()

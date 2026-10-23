@@ -176,7 +176,7 @@ def learn_rules_from_manual(conn: sqlite3.Connection) -> int:
         existing = conn.execute(
             '''SELECT category_id FROM merchant_rules
                WHERE match_type='merchant_exact'
-                 AND pattern=? COLLATE NOCASE
+                 AND lower(pattern)=lower(?)
                  AND direction_filter IN (?, 'any')
                  AND is_active=1''',
             (merchant, direction),

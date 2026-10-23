@@ -13,7 +13,7 @@ from core.ai_classify import (
     AUTO_APPLY_CONFIDENCE,
     analyze_expenses,
 )
-from core.db import backup_db, init_db
+from core.db import backup_db, init_db, read_sql_query
 from ui import category_label
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -121,7 +121,7 @@ def render(conn: sqlite3.Connection) -> None:
     cols[2].metric('Автоматаар ангилсан', f"{selected_run['auto_classified']:,}")
     cols[3].metric('Шалгах шаардлагатай', f"{selected_run['needs_review']:,}")
 
-    mappings = pd.read_sql_query(
+    mappings = read_sql_query(
         '''SELECT m.match_value AS merchant,
                   c.name AS category,
                   m.expense_total_minor,

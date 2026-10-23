@@ -1,8 +1,13 @@
-"""SQLite schema, initial categories, and database backups."""
+"""Database connections, schema initialization, and local SQLite backups."""
 
+import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import pandas as pd
 
 
 DEFAULT_CATEGORIES = {
@@ -18,17 +23,181 @@ DEFAULT_CATEGORIES = {
 }
 
 
-def get_conn(path: str = 'finance.db') -> sqlite3.Connection:
-    """Open a connection with named rows and foreign keys enabled."""
+class _HybridRow(dict[str, Any]):
+    """Support both named and positional database row access."""
+
+    def __getitem__(self, key: str | int) -> Any:
+        if isinstance(key, int):
+            return tuple(self.values())[key]
+        return super().__getitem__(key)
+
+
+def _postgres_row(cursor: Any) -> Any:
+    """Build a row supporting the sqlite3.Row access pattern."""
+    return lambda values: _HybridRow(
+        (column.name, value)
+        for column, value in zip(cursor.description, values)
+    )
+
+
+class _PostgresCursor:
+    """Expose the sqlite cursor methods used by this application."""
+
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+        self._first_row: Any = None
+        self._first_loaded = False
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+    @property
+    def lastrowid(self) -> int | None:
+        if not self._first_loaded:
+            self._first_row = self._cursor.fetchone()
+            self._first_loaded = True
+        return None if self._first_row is None else self._first_row['id']
+
+    @property
+    def description(self) -> Any:
+        return self._cursor.description
+
+    def fetchone(self) -> Any:
+        if self._first_loaded:
+            row = self._first_row
+            self._first_row = None
+            self._first_loaded = False
+            return row
+        return self._cursor.fetchone()
+
+    def fetchall(self) -> list[Any]:
+        rows = self._cursor.fetchall()
+        if self._first_row is not None:
+            rows.insert(0, self._first_row)
+            self._first_row = None
+            self._first_loaded = False
+        return rows
+
+    def __iter__(self) -> Any:
+        if self._first_row is not None:
+            row = self._first_row
+            self._first_row = None
+            self._first_loaded = False
+            yield row
+        yield from self._cursor
+
+
+class _PostgresConnection:
+    """Adapt psycopg to the small sqlite connection API used by the app."""
+
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+
+    @staticmethod
+    def _prepare(sql: str, returning_id: bool = True) -> str:
+        query = sql.replace('?', '%s')
+        if re.match(r'\s*PRAGMA\b', query, re.IGNORECASE):
+            return ''
+        if returning_id and re.match(r'\s*INSERT\b', query, re.IGNORECASE):
+            if not re.search(r'\bRETURNING\b', query, re.IGNORECASE):
+                query = query.rstrip().rstrip(';') + ' RETURNING id'
+        return query
+
+    def execute(self, sql: str, parameters: Any = ()) -> _PostgresCursor:
+        query = self._prepare(sql)
+        if not query:
+            return _PostgresCursor(self._raw.execute('SELECT 1 WHERE FALSE'))
+        try:
+            return _PostgresCursor(self._raw.execute(query, parameters))
+        except Exception as exc:
+            from psycopg import IntegrityError
+
+            if isinstance(exc, IntegrityError):
+                raise sqlite3.IntegrityError(str(exc)) from exc
+            raise
+
+    def executemany(self, sql: str, parameters: Any) -> _PostgresCursor:
+        query = self._prepare(sql, returning_id=False)
+        try:
+            return _PostgresCursor(
+                self._raw.cursor().executemany(query, parameters)
+            )
+        except Exception as exc:
+            from psycopg import IntegrityError
+
+            if isinstance(exc, IntegrityError):
+                raise sqlite3.IntegrityError(str(exc)) from exc
+            raise
+
+    def executescript(self, script: str) -> None:
+        for statement in script.split(';'):
+            if statement.strip():
+                self.execute(statement)
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def rollback(self) -> None:
+        self._raw.rollback()
+
+    def close(self) -> None:
+        self._raw.close()
+
+    def __enter__(self) -> '_PostgresConnection':
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> Any:
+        if exc_type is None:
+            self._raw.commit()
+        else:
+            self._raw.rollback()
+        return False
+
+
+def is_postgres(conn: Any) -> bool:
+    """Return whether a connection targets PostgreSQL."""
+    return isinstance(conn, _PostgresConnection)
+
+
+def get_conn(path: str = 'finance.db') -> Any:
+    """Open PostgreSQL when configured, otherwise open the local SQLite file."""
+    database_url = os.environ.get('DATABASE_URL', '').strip()
+    if database_url:
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise RuntimeError(
+                'DATABASE_URL is set but psycopg is not installed.'
+            ) from exc
+        raw = psycopg.connect(
+            database_url,
+            row_factory=lambda cursor: _postgres_row(cursor),
+        )
+        return _PostgresConnection(raw)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
     return conn
 
 
-def init_db(conn: sqlite3.Connection) -> None:
+def read_sql_query(
+    query: str,
+    conn: Any,
+    params: Any = None,
+) -> pd.DataFrame:
+    """Read query results into a DataFrame for SQLite or PostgreSQL."""
+    cursor = conn.execute(query, () if params is None else params)
+    columns = [column[0] if isinstance(column, tuple) else column.name
+               for column in cursor.description or ()]
+    rows = cursor.fetchall()
+    records = [dict(row) if not isinstance(row, tuple) else row for row in rows]
+    return pd.DataFrame.from_records(records, columns=columns)
+
+
+def init_db(conn: Any) -> None:
     """Create the schema and seed categories when the category table is empty."""
-    conn.executescript("""
+    schema = """
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY, bank_code TEXT, account_number TEXT UNIQUE,
             currency TEXT, nickname TEXT
@@ -109,7 +278,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category_id);
         CREATE INDEX IF NOT EXISTS idx_transactions_merchant ON transactions(merchant_clean);
         CREATE INDEX IF NOT EXISTS idx_transactions_counterparty ON transactions(counterparty_account);
-    """)
+    """
+    if is_postgres(conn):
+        schema = re.sub(
+            r'\bINTEGER PRIMARY KEY\b',
+            'INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY',
+            schema,
+        )
+    conn.executescript(schema)
     with conn:
         if conn.execute('SELECT COUNT(*) FROM categories').fetchone()[0] == 0:
             conn.executemany(
@@ -119,7 +295,9 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 def backup_db(path: str = 'finance.db', folder: str = 'backups') -> str | None:
-    """Create a consistent SQLite snapshot; return None for a missing database."""
+    """Create a consistent SQLite snapshot; return None without a local database."""
+    if os.environ.get('DATABASE_URL', '').strip():
+        return None
     source = Path(path)
     if not source.is_file():
         return None

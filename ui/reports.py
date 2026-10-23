@@ -7,6 +7,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+from core.db import read_sql_query
 from ui import category_label
 
 REPORT_SECTIONS = {
@@ -59,7 +60,7 @@ def _load_dashboard_data(
     elif classification_filter == 'Ангилаагүй':
         clauses.append("t.category_id IS NULL AND t.classified_by='none'")
 
-    return pd.read_sql_query(
+    return read_sql_query(
         f'''SELECT t.id, t.txn_datetime AS date, t.amount,
                    t.direction, t.raw_description AS description,
                    t.merchant_clean AS merchant,

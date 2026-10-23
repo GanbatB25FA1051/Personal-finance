@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core.db import backup_db
+from core.db import backup_db, is_postgres, read_sql_query
 from core.ingest import import_statement
 from core.models import ImportResult
 from ui import translate_import_message
@@ -24,6 +24,13 @@ def _import_and_archive(
     """Import a statement and retain its workbook for later re-import."""
     backup_db(str(APP_DIR / 'finance.db'), str(APP_DIR / 'backups'))
     result = import_statement(conn, data, filename)
+    if is_postgres(conn):
+        st.info(
+            'Хуулгыг Neon өгөгдлийн санд хадгаллаа. Эх Excel файл Render-ийн '
+            'түр файлын системд архивлагдахгүй тул дахин оруулахдаа эх файлаа '
+            'дахин сонгоно уу.'
+        )
+        return result
     file_hash = hashlib.sha256(data).hexdigest()
     archive_path = STATEMENT_ARCHIVE / f'{file_hash}.xlsx'
     try:
@@ -79,7 +86,7 @@ def render(conn: sqlite3.Connection) -> None:
             st.session_state['next_page'] = 'Review'
             st.rerun()
     st.subheader('Оруулсан хуулгын түүх')
-    history = pd.read_sql_query(
+    history = read_sql_query(
         '''SELECT filename,
                   CASE
                     WHEN period_start IS NULL THEN COALESCE(period_end, '')

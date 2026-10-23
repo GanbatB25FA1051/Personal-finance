@@ -5,6 +5,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 from core.classify import set_category
+from core.db import read_sql_query
 from ui import (
     category_label,
     category_name,
@@ -24,7 +25,7 @@ CLASSIFICATION_LABELS = {
 def render(conn: sqlite3.Connection) -> None:
     """Add, rename, archive and safely delete categories."""
     st.title('Ангиллын жагсаалт')
-    table = pd.read_sql_query(
+    table = read_sql_query(
         '''SELECT c.id,
                   c.name,
                   c.type,
@@ -206,7 +207,7 @@ def render(conn: sqlite3.Connection) -> None:
         if transaction_clauses
         else ''
     )
-    transaction_rows = pd.read_sql_query(
+    transaction_rows = read_sql_query(
         f'''SELECT t.id, t.txn_datetime AS date, t.amount,
                    t.merchant_clean AS merchant,
                    t.raw_description AS description,

@@ -5,7 +5,13 @@ from decimal import Decimal
 
 import pytest
 
-from core.db import backup_db, get_conn, init_db
+from core.db import (
+    _PostgresConnection,
+    backup_db,
+    get_conn,
+    init_db,
+    read_sql_query,
+)
 from core.models import to_minor
 
 
@@ -32,6 +38,49 @@ def test_dedupe_key_unique() -> None:
             conn.execute("INSERT INTO transactions(dedupe_key) VALUES ('same')")
     finally:
         conn.close()
+
+
+def test_read_sql_query_supports_sqlite_connection() -> None:
+    conn = get_conn(':memory:')
+    try:
+        init_db(conn)
+        result = read_sql_query(
+            'SELECT name, type FROM categories ORDER BY id LIMIT ?',
+            conn,
+            [1],
+        )
+        assert list(result.columns) == ['name', 'type']
+        assert len(result) == 1
+    finally:
+        conn.close()
+
+
+def test_postgres_adapter_translates_placeholders_and_returns_ids() -> None:
+    query = _PostgresConnection._prepare(
+        'INSERT INTO accounts(bank_code) VALUES (?)'
+    )
+    assert query == (
+        'INSERT INTO accounts(bank_code) VALUES (%s) RETURNING id'
+    )
+
+
+def test_postgres_connection_context_keeps_connection_open() -> None:
+    class FakeConnection:
+        committed = False
+        rolled_back = False
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
+    raw = FakeConnection()
+    adapted = _PostgresConnection(raw)
+    with adapted as connection:
+        assert connection is adapted
+    assert raw.committed
+    assert not raw.rolled_back
 
 
 @pytest.mark.parametrize(('value', 'expected'), [

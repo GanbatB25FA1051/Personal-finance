@@ -91,8 +91,10 @@ def import_statement(conn: sqlite3.Connection, file: str | Path | bytes | Binary
         conn.execute('UPDATE imports SET rows_parsed=?,rows_new=?,rows_duplicate=? WHERE id=?',
                      (total, added, total - added, import_id))
         conn.execute('RELEASE SAVEPOINT statement_import')
+        conn.commit()
     except Exception:
         conn.execute('ROLLBACK TO SAVEPOINT statement_import')
         conn.execute('RELEASE SAVEPOINT statement_import')
+        conn.commit()
         raise
     return ImportResult(import_id, total, added, total - added, auto, needs, warnings)
