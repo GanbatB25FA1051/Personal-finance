@@ -77,3 +77,46 @@ def test_dashboard_category_and_classification_filters() -> None:
         assert uncategorized['description'].tolist() == ['unknown']
     finally:
         conn.close()
+
+
+def test_dashboard_can_analyze_one_import_including_overlapping_rows() -> None:
+    conn = _dashboard_connection()
+    try:
+        first_import = conn.execute(
+            '''INSERT INTO imports(filename, rows_parsed, imported_at)
+               VALUES ('first.xlsx', 2, '2026-01-01')'''
+        ).lastrowid
+        second_import = conn.execute(
+            '''INSERT INTO imports(filename, rows_parsed, imported_at)
+               VALUES ('second.xlsx', 2, '2026-02-01')'''
+        ).lastrowid
+        first_transaction = conn.execute(
+            "SELECT id FROM transactions WHERE raw_description='market' "
+            "AND txn_datetime LIKE '2026-01-02%'"
+        ).fetchone()[0]
+        second_transaction = conn.execute(
+            "SELECT id FROM transactions WHERE txn_datetime LIKE '2026-02-01%'"
+        ).fetchone()[0]
+        conn.executemany(
+            '''INSERT INTO import_transactions(import_id, transaction_id)
+               VALUES (?, ?)''',
+            [
+                (first_import, first_transaction),
+                (second_import, first_transaction),
+                (second_import, second_transaction),
+            ],
+        )
+        conn.commit()
+
+        selected = _load_dashboard_data(
+            conn,
+            '2026-01-01',
+            '2026-02-28',
+            ['Бүгд'],
+            'Бүгд',
+            import_id=second_import,
+        )
+
+        assert set(selected['id']) == {first_transaction, second_transaction}
+    finally:
+        conn.close()

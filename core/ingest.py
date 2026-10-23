@@ -66,6 +66,18 @@ def import_statement(conn: sqlite3.Connection, file: str | Path | bytes | Binary
                  row.balance_after, row.raw_description, row.counterparty_account, row.branch_code,
                  '' if fee else parser.clean_merchant(row.raw_description), fee_category if fee else None,
                  'system' if fee else 'none', parent, key))
+            transaction = conn.execute(
+                'SELECT id FROM transactions WHERE dedupe_key=?',
+                (key,),
+            ).fetchone()
+            if transaction is None:
+                raise RuntimeError('Imported transaction could not be retrieved.')
+            conn.execute(
+                '''INSERT INTO import_transactions(import_id, transaction_id)
+                   VALUES (?, ?) ON CONFLICT(import_id, transaction_id) DO NOTHING
+                   RETURNING import_id''',
+                (import_id, transaction['id']),
+            )
             if cursor.rowcount:
                 new_ids.append(cursor.lastrowid)
                 new_rows.append(row)
@@ -86,7 +98,13 @@ def import_statement(conn: sqlite3.Connection, file: str | Path | bytes | Binary
             learn_rules_from_manual(conn)
             auto = apply_rules(conn, new_ids)
             auto += classify_remaining(conn, new_ids)
-        needs = conn.execute('SELECT COUNT(*) FROM transactions WHERE import_id=? AND category_id IS NULL', (import_id,)).fetchone()[0]
+        needs = conn.execute(
+            '''SELECT COUNT(DISTINCT t.id)
+               FROM transactions AS t
+               JOIN import_transactions AS it ON it.transaction_id=t.id
+               WHERE it.import_id=? AND t.category_id IS NULL''',
+            (import_id,),
+        ).fetchone()[0]
         total, added = len(statement.rows), len(new_ids)
         conn.execute('UPDATE imports SET rows_parsed=?,rows_new=?,rows_duplicate=? WHERE id=?',
                      (total, added, total - added, import_id))

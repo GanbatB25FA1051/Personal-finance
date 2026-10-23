@@ -43,10 +43,14 @@ streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headl
 ## Upload and use
 
 In **Upload**, choose a Khan Bank `.xlsx` statement (max 20 MB) and click
-**Import**. Files are kept in `imported_statements/` and can be re-imported.
-Duplicates are not added. New rows append to the same database; consistent
-manual merchant and description classifications become reusable rules.
-Review, browse, edit, and report on transactions in their respective pages.
+**Import**. On the local app, source files are kept in `imported_statements/`
+and can be re-imported. Render's filesystem is temporary, so it does not retain
+uploaded workbooks. Duplicates are not added to the transaction ledger; each
+import records which transactions appeared in that statement. New statements
+append to the shared database. In **Reports**, choose one imported statement
+or the combined history to analyze it. Older imports created before this
+statement-link tracking can only be analyzed using the transactions first added
+by each import.
 
 ## Add another bank
 

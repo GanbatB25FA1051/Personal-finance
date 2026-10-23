@@ -236,6 +236,11 @@ def init_db(conn: Any) -> None:
             rule_id INTEGER REFERENCES merchant_rules(id), note TEXT DEFAULT '',
             parent_txn_id INTEGER REFERENCES transactions(id), dedupe_key TEXT UNIQUE
         );
+        CREATE TABLE IF NOT EXISTS import_transactions (
+            import_id INTEGER NOT NULL REFERENCES imports(id),
+            transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+            PRIMARY KEY (import_id, transaction_id)
+        );
         CREATE TABLE IF NOT EXISTS ai_category_mappings (
             id INTEGER PRIMARY KEY,
             match_type TEXT NOT NULL CHECK(match_type IN ('merchant_exact','contains')),
@@ -278,6 +283,8 @@ def init_db(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category_id);
         CREATE INDEX IF NOT EXISTS idx_transactions_merchant ON transactions(merchant_clean);
         CREATE INDEX IF NOT EXISTS idx_transactions_counterparty ON transactions(counterparty_account);
+        CREATE INDEX IF NOT EXISTS idx_import_transactions_transaction
+            ON import_transactions(transaction_id);
     """
     if is_postgres(conn):
         schema = re.sub(
@@ -287,6 +294,12 @@ def init_db(conn: Any) -> None:
         )
     conn.executescript(schema)
     with conn:
+        conn.execute(
+            '''INSERT INTO import_transactions(import_id, transaction_id)
+               SELECT import_id, id FROM transactions WHERE import_id IS NOT NULL
+               ON CONFLICT(import_id, transaction_id) DO NOTHING
+               RETURNING import_id'''
+        )
         if conn.execute('SELECT COUNT(*) FROM categories').fetchone()[0] == 0:
             conn.executemany(
                 'INSERT INTO categories(name, type, is_default) VALUES (?, ?, 1)',

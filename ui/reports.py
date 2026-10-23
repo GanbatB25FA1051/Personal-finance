@@ -27,6 +27,7 @@ def _load_dashboard_data(
     end: str,
     selected_categories: list[str],
     classification_filter: str,
+    import_id: int | None = None,
 ) -> pd.DataFrame:
     """Load transactions within the selected dashboard filters."""
     clauses = [
@@ -34,6 +35,14 @@ def _load_dashboard_data(
         'substr(t.txn_datetime, 1, 10) <= ?',
     ]
     params: list[object] = [start, end]
+    if import_id is not None:
+        clauses.append(
+            '''EXISTS (
+                   SELECT 1 FROM import_transactions AS it
+                   WHERE it.transaction_id=t.id AND it.import_id=?
+               )'''
+        )
+        params.append(import_id)
     category_rows = conn.execute(
         'SELECT id, name FROM categories ORDER BY name'
     ).fetchall()
@@ -205,9 +214,58 @@ def _show_insights(
 def render(conn: sqlite3.Connection) -> None:
     """Display a selectable dashboard, transaction picker, and local insights."""
     st.title('Санхүүгийн тайлан')
-    bounds = conn.execute(
-        'SELECT MIN(txn_datetime), MAX(txn_datetime) FROM transactions'
-    ).fetchone()
+    import_rows = conn.execute(
+        '''SELECT i.id, i.filename, i.period_start, i.period_end, i.imported_at,
+                  i.rows_parsed, i.rows_duplicate,
+                  COUNT(it.transaction_id) AS linked_transactions
+           FROM imports AS i
+           LEFT JOIN import_transactions AS it ON it.import_id=i.id
+           GROUP BY i.id, i.filename, i.period_start, i.period_end,
+                    i.imported_at, i.rows_parsed, i.rows_duplicate
+           ORDER BY i.id DESC'''
+    ).fetchall()
+    import_options: dict[str, int | None] = {'Бүх хуулгыг нэгтгэх': None}
+    import_details: dict[int, sqlite3.Row] = {}
+    for row in import_rows:
+        period = ' – '.join(
+            value for value in (row['period_start'], row['period_end']) if value
+        ) or 'хугацаа тодорхойгүй'
+        label = (
+            f"#{row['id']} · {row['filename']} · {period} · "
+            f"{row['imported_at']}"
+        )
+        import_options[label] = row['id']
+        import_details[row['id']] = row
+    selected_label = st.selectbox(
+        'Шинжилгээний хамрах хүрээ',
+        list(import_options),
+        key='reports_import_scope',
+    )
+    selected_import_id = import_options[selected_label]
+    if selected_import_id is None:
+        bounds = conn.execute(
+            'SELECT MIN(txn_datetime), MAX(txn_datetime) FROM transactions'
+        ).fetchone()
+    else:
+        bounds = conn.execute(
+            '''SELECT MIN(t.txn_datetime), MAX(t.txn_datetime)
+               FROM transactions AS t
+               JOIN import_transactions AS it ON it.transaction_id=t.id
+               WHERE it.import_id=?''',
+            (selected_import_id,),
+        ).fetchone()
+        selected_import = import_details[selected_import_id]
+        if (
+            int(selected_import['rows_duplicate'] or 0) > 0
+            and int(selected_import['linked_transactions'] or 0)
+            < int(selected_import['rows_parsed'] or 0)
+        ):
+            st.warning(
+                'Энэ хуулгыг өмнөх хувилбарт импортлоход давхардсан мөрийн '
+                'эх үүсвэр хадгалагдаагүй тул одоо дангаар нь шинжлэхэд зарим '
+                'давхардсан гүйлгээ дутуу байж болно. Шинээр оруулах хуулгууд '
+                'энэ холбоосыг бүрэн хадгална.'
+            )
     if not bounds[0]:
         st.info('Тайлан гаргах гүйлгээ алга. Эхлээд банкны хуулгаа оруулна уу.')
         return
@@ -261,6 +319,7 @@ def render(conn: sqlite3.Connection) -> None:
             for label in selected_categories
         ],
         classification_filter,
+        import_id=selected_import_id,
     )
     if data.empty:
         st.info('Сонгосон шүүлтүүрт тохирох гүйлгээ алга.')
@@ -403,6 +462,7 @@ def render(conn: sqlite3.Connection) -> None:
                 end.isoformat(),
                 selected_categories,
                 classification_filter,
+                selected_import_id,
                 rows['id'].tolist(),
             )).encode('utf-8')
         ).hexdigest()[:16]

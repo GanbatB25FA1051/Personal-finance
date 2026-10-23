@@ -40,6 +40,28 @@ def test_dedupe_key_unique() -> None:
         conn.close()
 
 
+def test_init_backfills_import_transaction_links() -> None:
+    conn = get_conn(':memory:')
+    try:
+        init_db(conn)
+        import_id = conn.execute(
+            "INSERT INTO imports(filename) VALUES ('legacy.xlsx')"
+        ).lastrowid
+        transaction_id = conn.execute(
+            'INSERT INTO transactions(import_id) VALUES (?)',
+            (import_id,),
+        ).lastrowid
+
+        init_db(conn)
+
+        links = conn.execute(
+            '''SELECT import_id, transaction_id FROM import_transactions'''
+        ).fetchall()
+        assert [tuple(row) for row in links] == [(import_id, transaction_id)]
+    finally:
+        conn.close()
+
+
 def test_read_sql_query_supports_sqlite_connection() -> None:
     conn = get_conn(':memory:')
     try:
@@ -62,6 +84,13 @@ def test_postgres_adapter_translates_placeholders_and_returns_ids() -> None:
     assert query == (
         'INSERT INTO accounts(bank_code) VALUES (%s) RETURNING id'
     )
+    relation_query = _PostgresConnection._prepare(
+        '''INSERT INTO import_transactions(import_id, transaction_id)
+           VALUES (?, ?) ON CONFLICT(import_id, transaction_id) DO NOTHING
+           RETURNING import_id'''
+    )
+    assert 'RETURNING id' not in relation_query
+    assert 'VALUES (%s, %s)' in relation_query
 
 
 def test_postgres_connection_context_keeps_connection_open() -> None:

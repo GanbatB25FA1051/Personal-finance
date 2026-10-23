@@ -47,6 +47,10 @@ def _import_and_archive(
 def render(conn: sqlite3.Connection) -> None:
     """Upload an Excel statement and show import results."""
     st.title('Банкны хуулга оруулах')
+    st.caption(
+        'Шинэ хуулга өмнөх гүйлгээнүүдтэй нэгтгэгдэнэ. Давхардсан мөрийг '
+        'дахин нэмэхгүй; хуулга бүрийн тайланг Тайлан хэсгээс тусад нь сонгож болно.'
+    )
     file = st.file_uploader(
         'ХААН Банкны хуулга (.xlsx, 20 МБ хүртэл)',
         type=['xlsx'],

@@ -14,6 +14,11 @@ def test_import_and_duplicates(tmp_path) -> None:
     init_db(conn)
     first = import_statement(conn, path, path.name)
     assert first.rows_new == 12
+    first_links = conn.execute(
+        'SELECT COUNT(*) FROM import_transactions WHERE import_id=?',
+        (first.import_id,),
+    ).fetchone()[0]
+    assert first_links == 12
     fees = conn.execute(
         """SELECT * FROM transactions
            WHERE category_id=(SELECT id FROM categories
@@ -26,6 +31,11 @@ def test_import_and_duplicates(tmp_path) -> None:
     second = import_statement(conn, path.read_bytes(), path.name)
     assert (second.rows_new, second.rows_duplicate) == (0, 12)
     assert 'This exact file was already imported' in second.warnings
+    second_links = conn.execute(
+        'SELECT COUNT(*) FROM import_transactions WHERE import_id=?',
+        (second.import_id,),
+    ).fetchone()[0]
+    assert second_links == 12
     wb = load_workbook(path)
     ws = wb.active
     ws.delete_rows(13, 2)
@@ -35,6 +45,11 @@ def test_import_and_duplicates(tmp_path) -> None:
     wb.close()
     overlap = import_statement(conn, path, path.name)
     assert (overlap.rows_new, overlap.rows_duplicate) == (4, 6)
+    overlap_links = conn.execute(
+        'SELECT COUNT(*) FROM import_transactions WHERE import_id=?',
+        (overlap.import_id,),
+    ).fetchone()[0]
+    assert overlap_links == 10
     conn.close()
 
 

@@ -12,6 +12,7 @@ TABLES = (
     'merchant_rules',
     'imports',
     'transactions',
+    'import_transactions',
     'ai_analysis_runs',
     'ai_category_mappings',
     'ai_expense_mappings',
@@ -33,6 +34,7 @@ def migrate(source_path: str) -> dict[str, int]:
 
     try:
         init_db(destination)
+        init_db(source)
         for table in TABLES:
             if table != 'categories' and destination.execute(
                 f'SELECT COUNT(*) FROM {table}'
@@ -60,12 +62,18 @@ def migrate(source_path: str) -> dict[str, int]:
                     if column != 'id'
                 )
                 conflict = f'ON CONFLICT(id) DO UPDATE SET {updates}'
+            elif table == 'import_transactions':
+                conflict = (
+                    'ON CONFLICT(import_id, transaction_id) DO NOTHING'
+                )
             else:
                 conflict = 'ON CONFLICT(id) DO NOTHING'
             statement = (
                 f'INSERT INTO {table} ({names}) VALUES ({placeholders}) '
                 f'{conflict}'
             )
+            if table == 'import_transactions':
+                statement += ' RETURNING import_id'
             for row in rows:
                 destination.execute(statement, tuple(row)).fetchone()
 
@@ -78,13 +86,14 @@ def migrate(source_path: str) -> dict[str, int]:
                     f'Migration verification failed for table {table}: '
                     f'{source_counts[table]} source rows, {target_count} target rows.'
                 )
-            destination.execute(
-                f'''SELECT setval(
-                        pg_get_serial_sequence('{table}', 'id'),
-                        COALESCE(MAX(id), 1),
-                        MAX(id) IS NOT NULL
-                    ) FROM {table}'''
-            )
+            if table != 'import_transactions':
+                destination.execute(
+                    f'''SELECT setval(
+                            pg_get_serial_sequence('{table}', 'id'),
+                            COALESCE(MAX(id), 1),
+                            MAX(id) IS NOT NULL
+                        ) FROM {table}'''
+                )
         destination.commit()
         return source_counts
     except Exception:
