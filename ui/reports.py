@@ -21,6 +21,30 @@ REPORT_SECTIONS = {
 MAX_VISIBLE_TRANSACTIONS = 2000
 
 
+def _statement_scope_ids(
+    conn: sqlite3.Connection,
+    import_id: int,
+) -> list[int]:
+    """Return the selected import and all statements appended to it."""
+    scope = {int(import_id)}
+    pending = [int(import_id)]
+    while pending:
+        placeholders = ','.join('?' for _ in pending)
+        rows = conn.execute(
+            f'''SELECT child_import_id FROM import_extensions
+                WHERE parent_import_id IN ({placeholders})''',
+            pending,
+        ).fetchall()
+        children = {
+            int(row['child_import_id'])
+            for row in rows
+            if int(row['child_import_id']) not in scope
+        }
+        scope.update(children)
+        pending = list(children)
+    return sorted(scope)
+
+
 def _load_dashboard_data(
     conn: sqlite3.Connection,
     start: str,
@@ -36,23 +60,16 @@ def _load_dashboard_data(
     ]
     params: list[object] = [start, end]
     if import_id is not None:
+        import_ids = _statement_scope_ids(conn, import_id)
+        placeholders = ','.join('?' for _ in import_ids)
         clauses.append(
             '''EXISTS (
-                   WITH RECURSIVE statement_scope(id) AS (
-                       SELECT CAST(? AS INTEGER)
-                       UNION
-                       SELECT extension.child_import_id
-                       FROM import_extensions AS extension
-                       JOIN statement_scope AS parent
-                         ON extension.parent_import_id=parent.id
-                   )
-                   SELECT 1
-                   FROM import_transactions AS it
-                   JOIN statement_scope AS scope ON scope.id=it.import_id
+                   SELECT 1 FROM import_transactions AS it
                    WHERE it.transaction_id=t.id
+                     AND it.import_id IN (''' + placeholders + ''')
                )'''
         )
-        params.append(import_id)
+        params.extend(import_ids)
     category_rows = conn.execute(
         'SELECT id, name FROM categories ORDER BY name'
     ).fetchall()
@@ -240,18 +257,8 @@ def render(conn: sqlite3.Connection) -> None:
         period = ' – '.join(
             value for value in (row['period_start'], row['period_end']) if value
         ) or 'хугацаа тодорхойгүй'
-        extension_count = conn.execute(
-            '''WITH RECURSIVE statement_scope(id) AS (
-                   SELECT CAST(? AS INTEGER)
-                   UNION
-                   SELECT extension.child_import_id
-                   FROM import_extensions AS extension
-                   JOIN statement_scope AS parent
-                     ON extension.parent_import_id=parent.id
-               )
-               SELECT COUNT(*) - 1 FROM statement_scope''',
-            (row['id'],),
-        ).fetchone()[0]
+        import_ids = _statement_scope_ids(conn, row['id'])
+        extension_count = len(import_ids) - 1
         extension_label = (
             f' · {extension_count} нэмэлт' if extension_count else ''
         )
@@ -272,20 +279,14 @@ def render(conn: sqlite3.Connection) -> None:
             'SELECT MIN(txn_datetime), MAX(txn_datetime) FROM transactions'
         ).fetchone()
     else:
+        import_ids = _statement_scope_ids(conn, selected_import_id)
+        placeholders = ','.join('?' for _ in import_ids)
         bounds = conn.execute(
-            '''WITH RECURSIVE statement_scope(id) AS (
-                   SELECT CAST(? AS INTEGER)
-                   UNION
-                   SELECT extension.child_import_id
-                   FROM import_extensions AS extension
-                   JOIN statement_scope AS parent
-                     ON extension.parent_import_id=parent.id
-               )
-               SELECT MIN(t.txn_datetime), MAX(t.txn_datetime)
+            f'''SELECT MIN(t.txn_datetime), MAX(t.txn_datetime)
                FROM transactions AS t
                JOIN import_transactions AS it ON it.transaction_id=t.id
-               JOIN statement_scope AS scope ON scope.id=it.import_id''',
-            (selected_import_id,),
+               WHERE it.import_id IN ({placeholders})''',
+            import_ids,
         ).fetchone()
         selected_import = import_details[selected_import_id]
         if (
