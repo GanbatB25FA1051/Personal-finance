@@ -1,0 +1,9 @@
+finance.db
+backups/
+imported_statements/
+__pycache__/
+.venv/
+*.xlsx
+.env
+.env.*
+!.env.example

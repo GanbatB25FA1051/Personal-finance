@@ -1,0 +1,79 @@
+"""Test selectable dashboard filtering and local aggregations."""
+
+from core.db import get_conn, init_db
+from ui.reports import (
+    _load_dashboard_data,
+    _monthly_summary,
+    _spending_by_category,
+    _top_merchants,
+)
+
+
+def _dashboard_connection():
+    conn = get_conn(':memory:')
+    init_db(conn)
+    conn.executemany(
+        '''INSERT INTO transactions
+           (txn_datetime, amount, direction, raw_description, merchant_clean,
+            category_id, classified_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        [
+            ('2026-01-01 12:00:00', 100000, 'in', 'salary', 'Employer', 1, 'manual'),
+            ('2026-01-02 12:00:00', -20000, 'out', 'market', 'Market', 9, 'rule'),
+            ('2026-01-03 12:00:00', -1000, 'out', 'fee', '', 15, 'system'),
+            ('2026-01-04 12:00:00', -5000, 'out', 'unknown', 'Cafe', None, 'none'),
+            ('2026-01-05 12:00:00', -999999, 'out', 'transfer', 'Transfer', 16, 'manual'),
+            ('2026-02-01 12:00:00', -10000, 'out', 'market', 'Market', 9, 'manual'),
+        ],
+    )
+    conn.commit()
+    return conn
+
+
+def test_dashboard_aggregates_exclude_transfers_and_keep_fees_as_expense() -> None:
+    conn = _dashboard_connection()
+    try:
+        data = _load_dashboard_data(
+            conn,
+            '2026-01-01',
+            '2026-02-28',
+            ['Бүгд'],
+            'Бүгд',
+        )
+        monthly = _monthly_summary(data)
+        assert monthly.to_dict('records') == [
+            {'month': '2026-01', 'income': 1000.0, 'expense': 260.0, 'net': 740.0},
+            {'month': '2026-02', 'income': 0.0, 'expense': 100.0, 'net': -100.0},
+        ]
+        spending = _spending_by_category(data)
+        assert spending.iloc[0]['total'] == 300.0
+        assert 'Transfers (own accounts)' not in spending['category'].tolist()
+        merchants = _top_merchants(data)
+        assert merchants.iloc[0]['merchant'] == 'Market'
+        assert int(merchants.iloc[0]['count']) == 2
+    finally:
+        conn.close()
+
+
+def test_dashboard_category_and_classification_filters() -> None:
+    conn = _dashboard_connection()
+    try:
+        groceries = _load_dashboard_data(
+            conn,
+            '2026-01-01',
+            '2026-01-31',
+            ['Groceries / Food'],
+            'Гараар ангилсан',
+        )
+        assert len(groceries) == 0
+
+        uncategorized = _load_dashboard_data(
+            conn,
+            '2026-01-01',
+            '2026-01-31',
+            ['Ангилалгүй'],
+            'Ангилаагүй',
+        )
+        assert uncategorized['description'].tolist() == ['unknown']
+    finally:
+        conn.close()
