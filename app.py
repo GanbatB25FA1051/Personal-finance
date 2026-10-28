@@ -46,7 +46,16 @@ count = conn.execute(
        WHERE t.category_id IS NULL AND t.classified_by='none'
          AND (c.type IS NULL OR c.type!='fee')"""
 ).fetchone()[0]
-pages = ['Upload', 'Review', 'Transactions', 'Rules', 'Categories', 'Reports', 'AI_Analysis']
+pages = [
+    'Upload',
+    'Review',
+    'Transactions',
+    'Rules',
+    'Categories',
+    'Reports',
+    'Budget',
+    'AI_Analysis',
+]
 page_labels = {
     'Upload': 'Хуулга оруулах',
     'Review': 'Ангилах',
@@ -54,6 +63,7 @@ page_labels = {
     'Rules': 'Дүрмүүд',
     'Categories': 'Ангиллууд',
     'Reports': 'Тайлан',
+    'Budget': 'Төсөв',
     'AI_Analysis': 'AI шинжилгээ',
 }
 if 'next_page' in st.session_state:

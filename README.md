@@ -59,6 +59,14 @@ total income in the selected period. Clothing and footwear is available as a
 default expense category. Uncategorized transactions remain visible in the
 breakdown; assigning categories is needed for a meaningful category report.
 
+## Monthly budgets
+
+Open **Budget** to plan a month (defaults to next month). Enter category budgets
+in MNT and save. The page compares each target with actual categorized spending
+for that month, including remaining amounts, execution percentages, and
+over-budget warnings. Transfers and income categories are excluded; uncategorized
+spending is shown separately.
+
 ## Add another bank
 
 1. Copy `banks/khan_bank.py` to a new parser module.

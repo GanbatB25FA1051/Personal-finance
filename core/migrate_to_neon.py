@@ -9,6 +9,7 @@ from core.db import get_conn, init_db, is_postgres
 TABLES = (
     'accounts',
     'categories',
+    'budgets',
     'merchant_rules',
     'imports',
     'import_files',
@@ -74,6 +75,10 @@ def migrate(source_path: str) -> dict[str, int]:
                 conflict = (
                     'ON CONFLICT(parent_import_id, child_import_id) DO NOTHING'
                 )
+            elif table == 'budgets':
+                conflict = (
+                    'ON CONFLICT(budget_month, category_id) DO NOTHING'
+                )
             else:
                 conflict = 'ON CONFLICT(id) DO NOTHING'
             statement = (
@@ -86,6 +91,8 @@ def migrate(source_path: str) -> dict[str, int]:
                 statement += ' RETURNING import_id'
             elif table == 'import_extensions':
                 statement += ' RETURNING import_id'
+            elif table == 'budgets':
+                statement += ' RETURNING budget_month'
             for row in rows:
                 destination.execute(statement, tuple(row)).fetchone()
 
@@ -102,6 +109,7 @@ def migrate(source_path: str) -> dict[str, int]:
                 'import_transactions',
                 'import_files',
                 'import_extensions',
+                'budgets',
             ):
                 destination.execute(
                     f'''SELECT setval(

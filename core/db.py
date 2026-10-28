@@ -227,6 +227,13 @@ def init_db(conn: Any) -> None:
             type TEXT CHECK(type IN ('income','expense','transfer','fee')),
             is_default INTEGER, is_active INTEGER DEFAULT 1
         );
+        CREATE TABLE IF NOT EXISTS budgets (
+            budget_month TEXT NOT NULL,
+            category_id INTEGER NOT NULL REFERENCES categories(id),
+            amount INTEGER NOT NULL CHECK(amount >= 0),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (budget_month, category_id)
+        );
         CREATE TABLE IF NOT EXISTS merchant_rules (
             id INTEGER PRIMARY KEY,
             match_type TEXT CHECK(match_type IN
