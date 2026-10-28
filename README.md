@@ -7,6 +7,11 @@ A local, single-user personal finance app for Python 3.11+.
 On Windows, double-click `run.bat`. It creates `.venv`, installs requirements
 the first time, and starts the app in your browser.
 
+For the hosted My Finance application on Windows, double-click `My Finance.bat`.
+It opens the Render app in an Edge or Chrome app-style window and uses the
+existing cloud database. Internet access and the app password are required.
+This launcher is not an offline or standalone `.exe` application.
+
 To run manually from this folder:
 
 ```powershell
