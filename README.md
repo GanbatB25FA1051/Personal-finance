@@ -67,6 +67,15 @@ for that month, including remaining amounts, execution percentages, and
 over-budget warnings. Transfers and income categories are excluded; uncategorized
 spending is shown separately.
 
+## Long-term goals
+
+Open **Long-term goals** to plan a purchase using current savings, a loan, and
+family or other funding. Enter the target price and date; the app calculates
+the monthly savings needed and a fixed monthly loan installment from the annual
+interest rate and term. Goal savings and loan payments are also summarized in
+the selected month's **Budget** page as separate planned commitments, not as
+actual transaction expenses. Loan calculations are estimates, not lender quotes.
+
 ## Add another bank
 
 1. Copy `banks/khan_bank.py` to a new parser module.

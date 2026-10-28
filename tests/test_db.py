@@ -26,6 +26,9 @@ def test_init_is_idempotent() -> None:
         assert conn.execute(
             "SELECT type FROM categories WHERE name='Clothing & Footwear'"
         ).fetchone()[0] == 'expense'
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='goals'"
+        ).fetchone()[0] == 'goals'
         assert conn.execute('PRAGMA foreign_keys').fetchone()[0] == 1
         assert isinstance(conn.execute('SELECT * FROM categories').fetchone(), sqlite3.Row)
     finally:

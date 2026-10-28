@@ -12,6 +12,7 @@ from core.budget import (
     next_month_start,
     save_budgets,
 )
+from core.goals import goal_monthly_plan
 from core.models import to_minor
 from ui import category_label
 
@@ -91,10 +92,21 @@ def render(conn: sqlite3.Connection) -> None:
     total_budget = int(comparison['budget_minor'].sum())
     total_actual = int(comparison['actual_minor'].sum())
     remaining = total_budget - total_actual
-    metrics = st.columns(3)
-    metrics[0].metric('Төлөвлөсөн төсөв', _format_minor(total_budget))
+    goal_plan = goal_monthly_plan(conn, budget_month)
+    goal_savings = int(goal_plan['monthly_saving_minor'].sum())
+    goal_loans = int(goal_plan['monthly_loan_minor'].sum())
+    metrics = st.columns(5)
+    metrics[0].metric('Ангиллын төсөв', _format_minor(total_budget))
     metrics[1].metric('Бодит зарлага', _format_minor(total_actual))
-    metrics[2].metric('Үлдэгдэл', _format_minor(remaining))
+    metrics[2].metric('Зарлагын төсвийн үлдэгдэл', _format_minor(remaining))
+    metrics[3].metric(
+        'Зорилгын сарын төлөвлөгөө',
+        _format_minor(goal_savings + goal_loans),
+    )
+    metrics[4].metric(
+        'Нийт төлөвлөсөн дүн',
+        _format_minor(total_budget + goal_savings + goal_loans),
+    )
     if total_budget:
         st.caption(
             f'Нийт төсвийн гүйцэтгэл: {total_actual / total_budget * 100:,.1f}%. '
@@ -102,6 +114,34 @@ def render(conn: sqlite3.Connection) -> None:
         )
     else:
         st.info('Төсвөө ангилал тус бүрээр оруулж хадгална уу.')
+
+    if not goal_plan.empty:
+        st.subheader('Урт хугацааны зорилгын сарын төлөвлөгөө')
+        st.caption(
+            'Эдгээр нь зорилгод хуримтлуулах болон зээлийн төлөлтийн төлөвлөгөө; '
+            'ангиллын бодит зарлагад давхардуулж тооцоогүй.'
+        )
+        goal_display = goal_plan[['name', 'monthly_saving_minor', 'monthly_loan_minor']].copy()
+        goal_display['Хуримтлал'] = goal_display['monthly_saving_minor'].map(
+            _format_minor
+        )
+        goal_display['Зээлийн төлөлт'] = goal_display['monthly_loan_minor'].map(
+            _format_minor
+        )
+        goal_display['Нийт'] = (
+            goal_display['monthly_saving_minor']
+            + goal_display['monthly_loan_minor']
+        ).map(_format_minor)
+        st.dataframe(
+            goal_display[['name', 'Хуримтлал', 'Зээлийн төлөлт', 'Нийт']],
+            hide_index=True,
+            column_config={
+                'name': 'Зорилго',
+                'Хуримтлал': 'Сарын хуримтлал',
+                'Зээлийн төлөлт': 'Сарын зээлийн төлөлт',
+                'Нийт': 'Сарын нийт',
+            },
+        )
 
     st.subheader('Ангиллаар төсөв ба гүйцэтгэл')
     if comparison.empty:

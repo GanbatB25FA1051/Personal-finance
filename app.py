@@ -54,6 +54,7 @@ pages = [
     'Categories',
     'Reports',
     'Budget',
+    'Goals',
     'AI_Analysis',
 ]
 page_labels = {
@@ -64,6 +65,7 @@ page_labels = {
     'Categories': 'Ангиллууд',
     'Reports': 'Тайлан',
     'Budget': 'Төсөв',
+    'Goals': 'Урт хугацааны зорилго',
     'AI_Analysis': 'AI шинжилгээ',
 }
 if 'next_page' in st.session_state:

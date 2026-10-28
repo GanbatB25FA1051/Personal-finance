@@ -234,6 +234,23 @@ def init_db(conn: Any) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY (budget_month, category_id)
         );
+        CREATE TABLE IF NOT EXISTS goals (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            target_amount INTEGER NOT NULL CHECK(target_amount > 0),
+            current_savings INTEGER NOT NULL DEFAULT 0
+                CHECK(current_savings >= 0),
+            other_funding INTEGER NOT NULL DEFAULT 0 CHECK(other_funding >= 0),
+            loan_amount INTEGER NOT NULL DEFAULT 0 CHECK(loan_amount >= 0),
+            annual_interest_rate NUMERIC NOT NULL DEFAULT 0
+                CHECK(annual_interest_rate >= 0),
+            loan_term_months INTEGER NOT NULL DEFAULT 0
+                CHECK(loan_term_months >= 0),
+            loan_start_month TEXT NOT NULL,
+            target_date TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS merchant_rules (
             id INTEGER PRIMARY KEY,
             match_type TEXT CHECK(match_type IN

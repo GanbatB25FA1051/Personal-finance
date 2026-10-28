@@ -10,6 +10,7 @@ TABLES = (
     'accounts',
     'categories',
     'budgets',
+    'goals',
     'merchant_rules',
     'imports',
     'import_files',
