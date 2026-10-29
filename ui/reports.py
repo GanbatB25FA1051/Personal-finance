@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from core.db import read_sql_query
+from core.reports import available_accounts, available_currencies, transaction_scope
 from ui import category_label
 
 REPORT_SECTIONS = {
@@ -52,13 +53,11 @@ def _load_dashboard_data(
     selected_categories: list[str],
     classification_filter: str,
     import_id: int | None = None,
+    account_id: int | None = None,
+    currency: str | None = 'MNT',
 ) -> pd.DataFrame:
-    """Load transactions within the selected dashboard filters."""
-    clauses = [
-        'substr(t.txn_datetime, 1, 10) >= ?',
-        'substr(t.txn_datetime, 1, 10) <= ?',
-    ]
-    params: list[object] = [start, end]
+    """Load transactions within the shared date/account/currency scope."""
+    clauses, params = transaction_scope(start, end, account_id, currency)
     if import_id is not None:
         import_ids = _statement_scope_ids(conn, import_id)
         placeholders = ','.join('?' for _ in import_ids)
@@ -103,10 +102,20 @@ def _load_dashboard_data(
                    t.counterparty_account AS counterparty,
                    t.note, t.category_id,
                    COALESCE(c.name, 'Ангилалгүй') AS category,
-                   COALESCE(c.type, '') AS category_type,
+                   CASE WHEN c.type='transfer' OR EXISTS (
+                       SELECT 1 FROM transfer_pairs AS tp
+                       WHERE tp.outgoing_transaction_id=t.id
+                          OR tp.incoming_transaction_id=t.id
+                   ) THEN 'transfer' ELSE COALESCE(c.type, '') END AS category_type,
+                   CASE WHEN c.type='transfer' OR EXISTS (
+                       SELECT 1 FROM transfer_pairs AS tp
+                       WHERE tp.outgoing_transaction_id=t.id
+                          OR tp.incoming_transaction_id=t.id
+                   ) THEN 1 ELSE 0 END AS is_transfer,
                    t.classified_by
             FROM transactions AS t
             LEFT JOIN categories AS c ON c.id=t.category_id
+            LEFT JOIN accounts AS a ON a.id=t.account_id
             WHERE {' AND '.join(clauses)}
             ORDER BY t.txn_datetime DESC, t.id DESC''',
         conn,
@@ -114,11 +123,12 @@ def _load_dashboard_data(
     )
 
 
-def _format_minor(amount: int) -> str:
-    """Format signed minor units as MNT."""
+def _format_minor(amount: int, currency: str = 'MNT') -> str:
+    """Format signed minor units using the selected currency label."""
     sign = '-' if amount < 0 else ''
     units, cents = divmod(abs(int(amount)), 100)
-    return f'{sign}{units:,}.{cents:02d} ₮'
+    symbol = '₮' if currency.upper() == 'MNT' else currency.upper()
+    return f'{sign}{units:,}.{cents:02d} {symbol}'
 
 
 def _monthly_summary(data: pd.DataFrame) -> pd.DataFrame:
@@ -211,6 +221,7 @@ def _show_insights(
     manual: int,
     unclassified: int,
     total_count: int,
+    currency: str = 'MNT',
 ) -> None:
     """Present deterministic insights calculated locally from filtered rows."""
     st.subheader(REPORT_SECTIONS['insights'])
@@ -220,9 +231,9 @@ def _show_insights(
         latest = monthly.iloc[-1]
         st.write(
             f"Сүүлийн сарын орлогоос зарлага хассан үлдэгдэл: "
-            f"**{latest['net']:,.2f} ₮** "
-            f"(орлого {latest['income']:,.2f} ₮, зарлага "
-            f"{latest['expense']:,.2f} ₮)."
+            f"**{latest['net']:,.2f} {'₮' if currency == 'MNT' else currency}** "
+            f"(орлого {latest['income']:,.2f} {'₮' if currency == 'MNT' else currency}, зарлага "
+            f"{latest['expense']:,.2f} {'₮' if currency == 'MNT' else currency})."
         )
         if len(monthly) > 1:
             previous = monthly.iloc[-2]
@@ -236,15 +247,15 @@ def _show_insights(
             else:
                 st.write(
                     f"Сарын зарлага өмнөх сарын "
-                    f"{previous['expense']:,.2f} ₮-өөс "
-                    f"{latest['expense']:,.2f} ₮ боллоо."
+                    f"{previous['expense']:,.2f} {'₮' if currency == 'MNT' else currency}-өөс "
+                    f"{latest['expense']:,.2f} {'₮' if currency == 'MNT' else currency} боллоо."
                 )
     if not spending.empty:
         largest = spending.iloc[0]
         st.write(
             f"Хамгийн их зарлагатай ангилал: "
             f"**{category_label(largest['category'])}** — "
-            f"{largest['total']:,.2f} ₮."
+            f"{largest['total']:,.2f} {'₮' if currency == 'MNT' else currency}."
         )
     if total_count:
         classified = automatic + manual
@@ -252,7 +263,7 @@ def _show_insights(
             f"Ангилалтын явц: **{classified:,}/{total_count:,}** "
             f"({classified / total_count:.0%}); ангилаагүй "
             f"**{unclassified:,}**. Банкны шимтгэл: "
-            f"**{_format_minor(fees_minor)}**."
+            f"**{_format_minor(fees_minor, currency)}**."
         )
     st.caption(
         'Эдгээр зөвлөмжийг энэ төхөөрөмж дээрх өгөгдлөөс тооцно. '
@@ -341,6 +352,21 @@ def render(conn: sqlite3.Connection) -> None:
         st.error('Эхлэх огноо дуусах огнооноос хойш байж болохгүй.')
         return
 
+    currencies = available_currencies(conn)
+    default_currency = 'MNT' if 'MNT' in currencies else currencies[0]
+    currency = st.selectbox(
+        'Тайлангийн валют', currencies, index=currencies.index(default_currency),
+        key='reports_currency',
+    )
+    currency_label = '₮' if currency == 'MNT' else currency
+    accounts = available_accounts(conn, currency)
+    account_options = {'Бүх данс': None}
+    account_options.update({str(row['label']): int(row['id']) for row in accounts})
+    account_label = st.selectbox(
+        'Данс', list(account_options), key='reports_account',
+    )
+    selected_account_id = account_options[account_label]
+
     sections = st.multiselect(
         'Dashboard-д харуулах хэсгүүд',
         list(REPORT_SECTIONS),
@@ -376,6 +402,8 @@ def render(conn: sqlite3.Connection) -> None:
         ],
         classification_filter,
         import_id=selected_import_id,
+        account_id=selected_account_id,
+        currency=currency,
     )
     if data.empty:
         st.info('Сонгосон шүүлтүүрт тохирох гүйлгээ алга.')
@@ -388,6 +416,8 @@ def render(conn: sqlite3.Connection) -> None:
         ['Бүгд'],
         'Бүгд',
         import_id=selected_import_id,
+        account_id=selected_account_id,
+        currency=currency,
     )
     total_income_minor = int(
         income_data.loc[
@@ -437,11 +467,11 @@ def render(conn: sqlite3.Connection) -> None:
             total_income = int(eligible['amount'].clip(lower=0).sum())
             total_expense = int(-eligible['amount'].clip(upper=0).sum())
             cols = st.columns(4)
-            cols[0].metric('Нийт орлого', _format_minor(total_income_minor))
-            cols[1].metric('Зарлага', _format_minor(total_expense))
+            cols[0].metric('Нийт орлого', _format_minor(total_income_minor, currency))
+            cols[1].metric('Зарлага', _format_minor(total_expense, currency))
             cols[2].metric(
                 'Орлогоос зарлага хассан үлдэгдэл',
-                _format_minor(total_income_minor - total_expense),
+                _format_minor(total_income_minor - total_expense, currency),
             )
             cols[3].metric(
                 'Орлогын зарцуулалт',
@@ -451,7 +481,7 @@ def render(conn: sqlite3.Connection) -> None:
                 help='Сонгосон хугацааны нийт орлоготой харьцуулсан зарлага.',
             )
             st.caption(
-                f'Банкны шимтгэл: {_format_minor(fees_minor)}. '
+                f'Банкны шимтгэл: {_format_minor(fees_minor, currency)}. '
                 'Шилжүүлгийг орлого, зарлагын тооцоонд оруулаагүй.'
             )
             monthly_chart = monthly.set_index('month')[
@@ -464,10 +494,10 @@ def render(conn: sqlite3.Connection) -> None:
                 hide_index=True,
                 column_config={
                     'month': 'Сар',
-                    'income': st.column_config.NumberColumn('Орлого (₮)', format='%,.2f'),
-                    'expense': st.column_config.NumberColumn('Зарлага (₮)', format='%,.2f'),
+                    'income': st.column_config.NumberColumn(f'Орлого ({currency_label})', format='%,.2f'),
+                    'expense': st.column_config.NumberColumn(f'Зарлага ({currency_label})', format='%,.2f'),
                     'net': st.column_config.NumberColumn(
-                        'Орлогоос зарлага хассан үлдэгдэл (₮)',
+                        f'Орлогоос зарлага хассан үлдэгдэл ({currency_label})',
                         format='%,.2f',
                     ),
                 },
@@ -487,7 +517,7 @@ def render(conn: sqlite3.Connection) -> None:
                 column_config={
                     'category': 'Ангилал',
                     'total': st.column_config.NumberColumn(
-                        'Нийт зарлага (₮)',
+                        f'Нийт зарлага ({currency_label})',
                         format='%,.2f',
                     ),
                     'income_share_pct': st.column_config.NumberColumn(
@@ -528,7 +558,7 @@ def render(conn: sqlite3.Connection) -> None:
             column_config={
                 'merchant': 'Худалдаа, үйлчилгээ',
                 'total': st.column_config.NumberColumn(
-                    'Нийт зарлага (₮)',
+                    f'Нийт зарлага ({currency_label})',
                     format='%,.2f',
                 ),
                 'count': st.column_config.NumberColumn('Гүйлгээний тоо', format='%d'),
@@ -545,7 +575,7 @@ def render(conn: sqlite3.Connection) -> None:
             )
         rows = data.head(MAX_VISIBLE_TRANSACTIONS).copy()
         rows['date'] = rows['date'].str[:19]
-        rows['amount_display'] = rows['amount'].map(_format_minor)
+        rows['amount_display'] = rows['amount'].map(lambda value: _format_minor(value, currency))
         rows['category'] = rows['category'].map(category_label)
         display = rows[
             ['id', 'date', 'direction', 'amount_display', 'merchant',
@@ -559,6 +589,8 @@ def render(conn: sqlite3.Connection) -> None:
                 selected_categories,
                 classification_filter,
                 selected_import_id,
+                selected_account_id,
+                currency,
                 rows['id'].tolist(),
             )).encode('utf-8')
         ).hexdigest()[:16]
@@ -581,19 +613,22 @@ def render(conn: sqlite3.Connection) -> None:
         )
         selected_indices = edited.index[edited['Сонгох'].astype(bool)].tolist()
         selected_rows = rows.loc[selected_indices] if selected_indices else rows.iloc[0:0]
+        selected_financial_rows = selected_rows[
+            selected_rows['category_type'] != 'transfer'
+        ]
         selected_income = int(
-            selected_rows.loc[selected_rows['amount'] > 0, 'amount'].sum()
+            selected_financial_rows.loc[selected_financial_rows['amount'] > 0, 'amount'].sum()
         )
         selected_expense = int(
-            -selected_rows.loc[selected_rows['amount'] < 0, 'amount'].sum()
+            -selected_financial_rows.loc[selected_financial_rows['amount'] < 0, 'amount'].sum()
         )
         result_cols = st.columns(4)
         result_cols[0].metric('Сонгосон гүйлгээ', f'{len(selected_rows):,}')
-        result_cols[1].metric('Сонгосон орлого', _format_minor(selected_income))
-        result_cols[2].metric('Сонгосон зарлага', _format_minor(selected_expense))
+        result_cols[1].metric('Сонгосон орлого', _format_minor(selected_income, currency))
+        result_cols[2].metric('Сонгосон зарлага', _format_minor(selected_expense, currency))
         result_cols[3].metric(
             'Сонгосон цэвэр дүн',
-            _format_minor(selected_income - selected_expense),
+            _format_minor(selected_income - selected_expense, currency),
         )
 
     if 'insights' in sections:
@@ -605,4 +640,5 @@ def render(conn: sqlite3.Connection) -> None:
             manual,
             unclassified,
             len(eligible),
+            currency,
         )

@@ -61,3 +61,72 @@ def test_shifted_and_reordered_headers(tmp_path: Path) -> None:
     assert result.warnings == []
     assert result.rows[0].amount == -1520000
     wb.close()
+
+
+def test_footer_totals_follow_reordered_columns_and_header_can_be_shifted(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'reordered-footer.xlsx'
+    make_fixture(path)
+    wb = load_workbook(path)
+    ws = wb.active
+    ws.insert_rows(2, 4)
+    order = [7, 0, 3, 4, 5, 2, 6, 1]
+    for row_number in range(6, ws.max_row + 1):
+        old = [ws.cell(row_number, col).value for col in range(1, 9)]
+        for new_col, old_col in enumerate(order, 1):
+            ws.cell(row_number, new_col, old[old_col])
+    parser = detect_parser(wb)
+    assert isinstance(parser, KhanBankParser)
+    result = parser.parse(wb)
+    assert result.fatal_errors == []
+    assert len(result.rows) == 12
+    assert result.control_credit == sum(max(row.amount, 0) for row in result.rows)
+    assert result.control_debit == sum(min(row.amount, 0) for row in result.rows)
+    assert result.warnings == []
+    wb.close()
+
+def test_positive_debit_is_normalized_and_requires_review(tmp_path: Path) -> None:
+    path = tmp_path / 'positive-debit.xlsx'
+    make_fixture(path)
+    wb = load_workbook(path)
+    wb.active['E3'] = 15200
+    result = KhanBankParser().parse(wb)
+    assert result.rows[0].amount == -1_520_000
+    assert any('positive debit normalized' in warning for warning in result.warnings)
+    wb.close()
+
+def test_invalid_transaction_row_is_counted_as_skipped(tmp_path: Path) -> None:
+    path = tmp_path / 'invalid-row.xlsx'
+    make_fixture(path)
+    wb = load_workbook(path)
+    wb.active['A3'] = 'not-a-date'
+    result = KhanBankParser().parse(wb)
+    assert len(result.rows) == 11
+    assert result.rows_skipped == 1
+    assert any('row skipped' in warning for warning in result.warnings)
+    wb.close()
+
+
+def test_control_total_mismatch_is_a_review_warning(tmp_path: Path) -> None:
+    path = tmp_path / 'control-mismatch.xlsx'
+    make_fixture(path)
+    wb = load_workbook(path)
+    ws = wb.active
+    footer = next(
+        row for row in range(1, ws.max_row + 1)
+        if str(ws.cell(row, 1).value or '').startswith('Нийт дүн:')
+    )
+    ws.cell(footer, 4, '0.00')
+    result = KhanBankParser().parse(wb)
+    assert any('Total credit differs' in warning for warning in result.warnings)
+    wb.close()
+
+def test_balance_mismatch_is_a_review_warning(tmp_path: Path) -> None:
+    path = tmp_path / 'balance-mismatch.xlsx'
+    make_fixture(path)
+    wb = load_workbook(path)
+    wb.active['F3'] = 0
+    result = KhanBankParser().parse(wb)
+    assert any('opening balance plus amount' in warning for warning in result.warnings)
+    wb.close()

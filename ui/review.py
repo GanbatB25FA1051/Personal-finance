@@ -6,7 +6,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
-from core.classify import get_review_groups, set_category
+from core.classify import get_review_groups, preview_rule_scope, set_category
 from ui import category_label
 
 
@@ -25,6 +25,7 @@ def _extract_transferor_name(description: str | None) -> str | None:
 def _transaction_details(
     conn: sqlite3.Connection,
     txn_ids: list[int],
+    currency: str = 'MNT',
 ) -> pd.DataFrame:
     """Load detailed transaction rows in SQLite-safe batches."""
     rows: list[sqlite3.Row] = []
@@ -42,6 +43,7 @@ def _transaction_details(
             ).fetchall()
         )
 
+    currency_label = '₮' if currency == 'MNT' else currency
     details = pd.DataFrame(
         [
             {
@@ -49,7 +51,7 @@ def _transaction_details(
                 'Дүн': (
                     f"{'-' if row['amount'] < 0 else ''}"
                     f"{abs(row['amount']) // 100:,}."
-                    f"{abs(row['amount']) % 100:02d} ₮"
+                    f"{abs(row['amount']) % 100:02d} {currency_label}"
                 ),
                 'Гүйлгээний утга': row['raw_description'] or 'Бүртгээгүй',
                 'Шилжүүлэгчийн овог нэр': (
@@ -95,13 +97,15 @@ def render(conn: sqlite3.Connection) -> None:
                 'Багцаар ангилахаар сонгох',
                 key='select_' + key,
             )
-            total_mnt = (group['total'] + 50) // 100
+            total_units, total_fraction = divmod(group['total'], 100)
+            currency = group['currency']
+            currency_label = '₮' if currency == 'MNT' else currency
             direction_label = 'Орлого' if group['direction'] == 'in' else 'Зарлага'
             st.write(
                 f"{direction_label} · {group['count']} гүйлгээ · "
-                f'{total_mnt:,} ₮'
+                f'{total_units:,}.{total_fraction:02d} {currency_label}'
             )
-            details = _transaction_details(conn, group['txn_ids'])
+            details = _transaction_details(conn, group['txn_ids'], group['currency'])
             accounts = sorted(
                 {
                     account
@@ -131,21 +135,40 @@ def render(conn: sqlite3.Connection) -> None:
             category_names = list(categories) or ['Идэвхтэй ангилал алга']
             chosen = st.selectbox('Ангилал', category_names, key='cat_'+key,
                                   disabled=not categories)
+            remember_options = ['Үгүй']
+            if group['key_type'] == 'merchant' and group['key'].strip():
+                remember_options.append('Энэ худалдаа, үйлчилгээ')
+            if group['key_type'] == 'counterparty' and group['key'] != 'unknown':
+                remember_options.append('Энэ харьцсан данс')
             remember = st.selectbox(
-                'Дүрэм болгон хадгалах',
-                ['Үгүй', 'Энэ худалдаа, үйлчилгээ', 'Энэ харьцсан данс'],
-                key='remember_'+key,
+                'Дүрэм болгон хадгалах', remember_options, key='remember_'+key,
             )
+            remember_value = {
+                'Үгүй': None,
+                'Энэ худалдаа, үйлчилгээ': 'merchant',
+                'Энэ харьцсан данс': 'counterparty',
+            }[remember]
+            if remember_value and categories:
+                try:
+                    preview = preview_rule_scope(
+                        conn, group['txn_ids'], remember_value, categories[chosen]
+                    )
+                    total = preview['total'] / 100
+                    st.caption(
+                        f"Дүрмийн хамрах хүрээ: {preview['count']} гүйлгээ · "
+                        f"{total:,.2f} {currency_label} · {direction_label} · жишээ: "
+                        f"{preview['sample_desc'] or 'утгагүй'}"
+                    )
+                except ValueError as exc:
+                    st.warning(str(exc))
             left, right = st.columns(2)
             if left.button('Хадгалах', key='save_'+key, disabled=not categories):
-                with conn:
-                    set_category(conn, group['txn_ids'], categories[chosen],
-                                 {
-                                     'Үгүй': None,
-                                     'Энэ худалдаа, үйлчилгээ': 'merchant',
-                                     'Энэ харьцсан данс': 'counterparty',
-                                 }[remember])
-                st.rerun()
+                try:
+                    with conn:
+                        set_category(conn, group['txn_ids'], categories[chosen], remember_value)
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
             if right.button('Алгасах', key='skip_'+key):
                 skipped.add(key)
                 st.rerun()

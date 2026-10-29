@@ -16,10 +16,16 @@ TABLES = (
     'import_files',
     'import_extensions',
     'transactions',
+    'goal_savings_movements',
+    'recurring_payments',
+    'recurring_payment_matches',
+    'transfer_pairs',
+    'transfer_pair_audit',
     'import_transactions',
     'ai_analysis_runs',
     'ai_category_mappings',
     'ai_expense_mappings',
+    'classification_audit',
 )
 
 
@@ -76,9 +82,11 @@ def migrate(source_path: str) -> dict[str, int]:
                 conflict = (
                     'ON CONFLICT(parent_import_id, child_import_id) DO NOTHING'
                 )
+            elif table == 'recurring_payment_matches':
+                conflict = 'ON CONFLICT(payment_id, occurrence_month) DO NOTHING'
             elif table == 'budgets':
                 conflict = (
-                    'ON CONFLICT(budget_month, category_id) DO NOTHING'
+                    'ON CONFLICT(budget_month, category_id, currency, account_scope) DO NOTHING'
                 )
             else:
                 conflict = 'ON CONFLICT(id) DO NOTHING'
@@ -94,6 +102,10 @@ def migrate(source_path: str) -> dict[str, int]:
                 statement += ' RETURNING import_id'
             elif table == 'budgets':
                 statement += ' RETURNING budget_month'
+            elif table in ('goal_savings_movements', 'recurring_payments'):
+                statement += ' RETURNING id'
+            elif table == 'recurring_payment_matches':
+                statement += ' RETURNING payment_id'
             for row in rows:
                 destination.execute(statement, tuple(row)).fetchone()
 
@@ -110,6 +122,7 @@ def migrate(source_path: str) -> dict[str, int]:
                 'import_transactions',
                 'import_files',
                 'import_extensions',
+                'recurring_payment_matches',
                 'budgets',
             ):
                 destination.execute(
@@ -122,7 +135,10 @@ def migrate(source_path: str) -> dict[str, int]:
         destination.commit()
         return source_counts
     except Exception:
-        destination.rollback()
+        try:
+            destination.rollback()
+        except Exception:
+            pass
         raise
     finally:
         source.close()

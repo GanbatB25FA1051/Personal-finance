@@ -9,7 +9,11 @@ from core.classify import (
     get_review_groups,
     classify_remaining,
     learn_rules_from_manual,
+    preview_rule_scope,
+    reapply_rules,
     set_category,
+    set_category_active,
+    update_rule,
 )
 from core.db import get_conn, init_db
 
@@ -58,8 +62,10 @@ def test_manual_rows_are_not_overwritten_and_merchant_rule_tags_others(conn) -> 
     ).fetchone()
     assert (first['category_id'], first['classified_by']) == (6, 'manual')
 
-    add_rule(conn, 'contains', 'shop', 7, priority=1)
-    assert apply_rules(conn) == 1
+    add_rule(conn, 'contains', 'shop', 7, 'out', priority=1)
+    # The remembered merchant rule already classified the second matching row.
+    assert conn.execute("SELECT classified_by FROM transactions WHERE id=2").fetchone()[0] == 'rule'
+    assert apply_rules(conn) == 0
     row = conn.execute(
         'SELECT category_id, classified_by FROM transactions WHERE id=1'
     ).fetchone()
@@ -136,14 +142,14 @@ def test_invalid_merchant_names_fall_back_to_counterparty(conn) -> None:
 
 
 def test_empty_selection_and_clear_preserve_manual_intent(conn) -> None:
-    add_rule(conn, 'contains', 'shop', 6)
+    add_rule(conn, 'contains', 'shop', 6, 'out')
     conn.execute(
         "UPDATE transactions SET classified_by='system', category_id=15 WHERE id=1"
     )
     conn.commit()
 
     assert apply_rules(conn, []) == 0
-    assert apply_rules(conn) == 2
+    assert apply_rules(conn) == 1
     assert conn.execute(
         'SELECT classified_by FROM transactions WHERE id=1'
     ).fetchone()[0] == 'system'
@@ -222,3 +228,148 @@ def test_fallback_classification_only_updates_unclassified_transactions(conn) ->
     assert tuple(rows[1]) == (2, 14, 'system')
     assert tuple(rows[2]) == (3, 15, 'system')
     assert tuple(rows[3]) == (4, 5, 'system')
+
+
+
+def test_mixed_bulk_remember_is_rejected_before_any_manual_update(conn) -> None:
+    with pytest.raises(ValueError, match='one non-empty'):
+        set_category(conn, [1, 3], 6, 'merchant')
+    with pytest.raises(ValueError, match='one transaction direction'):
+        set_category(conn, [1, 4], 16, 'merchant')
+    assert [row[0] for row in conn.execute('SELECT category_id FROM transactions WHERE id IN (1,3,4) ORDER BY id').fetchall()] == [None, None, None]
+    assert conn.execute('SELECT COUNT(*) FROM merchant_rules').fetchone()[0] == 0
+
+
+def test_blank_merchant_cannot_be_remembered(conn) -> None:
+    conn.execute("UPDATE transactions SET merchant_clean='' WHERE id=3")
+    conn.commit()
+    with pytest.raises(ValueError, match='non-empty'):
+        set_category(conn, [3], 8, 'merchant')
+    assert conn.execute('SELECT category_id FROM transactions WHERE id=3').fetchone()[0] is None
+    assert conn.execute('SELECT COUNT(*) FROM merchant_rules').fetchone()[0] == 0
+
+
+def test_remember_none_does_not_create_persistent_rule(conn) -> None:
+    set_category(conn, [1], 6, remember=None)
+    assert conn.execute('SELECT COUNT(*) FROM merchant_rules').fetchone()[0] == 0
+    assert conn.execute('SELECT classified_by FROM transactions WHERE id=1').fetchone()[0] == 'manual'
+
+
+def test_conflicting_rule_rejects_manual_save_atomically(conn) -> None:
+    add_rule(conn, 'merchant_exact', 'shop', 7, 'out')
+    with pytest.raises(ValueError, match='another category'):
+        set_category(conn, [1], 6, 'merchant')
+    assert conn.execute('SELECT category_id FROM transactions WHERE id=1').fetchone()[0] is None
+    assert conn.execute('SELECT COUNT(*) FROM merchant_rules').fetchone()[0] == 1
+
+
+def test_invalid_archived_and_direction_categories_are_rejected(conn) -> None:
+    with pytest.raises(ValueError, match='direction'):
+        set_category(conn, [1], 1)
+    conn.execute('UPDATE categories SET is_active=0 WHERE id=6')
+    conn.commit()
+    with pytest.raises(ValueError, match='archived'):
+        set_category(conn, [1], 6)
+    with pytest.raises(ValueError, match='archived'):
+        add_rule(conn, 'merchant_exact', 'shop', 6, 'out')
+
+
+def test_manual_classification_survives_rule_reapply_and_audit_is_written(conn) -> None:
+    set_category(conn, [1], 6)
+    conn.execute("UPDATE transactions SET category_id=15, classified_by='system' WHERE id=3")
+    conn.commit()
+    add_rule(conn, 'contains', 'shop', 7, 'out', priority=1)
+    assert apply_rules(conn) == 1
+    before = conn.execute('SELECT category_id, classified_by FROM transactions WHERE id=1').fetchone()
+    assert tuple(before) == (6, 'manual')
+    assert reapply_rules(conn) == 1
+    assert tuple(conn.execute('SELECT category_id, classified_by FROM transactions WHERE id=1').fetchone()) == (6, 'manual')
+    assert tuple(conn.execute('SELECT category_id, classified_by FROM transactions WHERE id=3').fetchone()) == (15, 'system')
+    audit = conn.execute(
+        "SELECT old_values, new_values, changed_at FROM classification_audit WHERE entity_type='transaction' AND entity_id=1 ORDER BY id LIMIT 1"
+    ).fetchone()
+    assert audit is not None and audit['old_values'] is not None and audit['new_values'] is not None
+    assert audit['changed_at']
+
+
+def test_remembered_rule_preview_reports_direction_count_total_and_sample(conn) -> None:
+    preview = preview_rule_scope(conn, [1, 2], 'merchant', 6)
+    assert preview['direction'] == 'out'
+    assert preview['count'] == 2
+    assert preview['total'] == 800
+    assert preview['sample_desc'] == 'Shop food'
+    assert not preview['already_exists']
+
+
+def test_failed_audit_rolls_back_category_and_rule(monkeypatch, conn) -> None:
+    import core.classify as classify
+
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError('audit unavailable')
+
+    monkeypatch.setattr(classify, '_audit', fail_audit)
+    with pytest.raises(RuntimeError, match='audit unavailable'):
+        set_category(conn, [1], 6, 'merchant')
+    assert tuple(conn.execute('SELECT category_id, classified_by FROM transactions WHERE id=1').fetchone()) == (None, 'none')
+    assert conn.execute('SELECT COUNT(*) FROM merchant_rules').fetchone()[0] == 0
+
+
+
+def test_rule_update_and_archive_write_old_new_audit(conn) -> None:
+    rule_id = add_rule(conn, 'merchant_exact', 'shop', 6, 'out')
+    assert apply_rules(conn) == 2
+    update_rule(conn, rule_id, category_id=7, priority=20)
+    rule_audit = conn.execute(
+        "SELECT old_values, new_values, changed_at FROM classification_audit WHERE entity_type='rule' AND entity_id=? ORDER BY id DESC LIMIT 1",
+        (rule_id,),
+    ).fetchone()
+    assert rule_audit is not None and rule_audit['changed_at']
+    assert '"category_id": 6' in rule_audit['old_values']
+    assert '"category_id": 7' in rule_audit['new_values']
+    assert conn.execute(
+        "SELECT category_id FROM transactions WHERE id=2"
+    ).fetchone()[0] == 7
+
+    set_category_active(conn, 7, False)
+    assert conn.execute('SELECT is_active FROM categories WHERE id=7').fetchone()[0] == 0
+    assert conn.execute('SELECT is_active FROM merchant_rules WHERE id=?', (rule_id,)).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM classification_audit WHERE entity_type='category' AND entity_id=7 AND action='archive'"
+    ).fetchone()[0] == 1
+
+
+def test_failed_rule_audit_rolls_back_rule_update(monkeypatch, conn) -> None:
+    import core.classify as classify
+
+    rule_id = add_rule(conn, 'merchant_exact', 'shop', 6, 'out')
+    conn.commit()
+    def fail_audit(*_args, **_kwargs):
+        raise RuntimeError('audit unavailable')
+    monkeypatch.setattr(classify, '_audit', fail_audit)
+    with pytest.raises(RuntimeError, match='audit unavailable'):
+        update_rule(conn, rule_id, category_id=7)
+    assert tuple(conn.execute(
+        'SELECT category_id, priority, is_active FROM merchant_rules WHERE id=?',
+        (rule_id,),
+    ).fetchone()) == (6, 100, 1)
+
+
+
+def test_review_group_totals_do_not_mix_currencies(conn) -> None:
+    conn.execute(
+        'INSERT INTO accounts(id, account_number, currency) VALUES (1, ?, ?)',
+        ('998800000001', 'USD'),
+    )
+    conn.execute(
+        '''INSERT INTO transactions(account_id, merchant_clean, raw_description, amount, direction)
+           VALUES (1, 'shop', 'Shop USD', -2500, 'out')'''
+    )
+    conn.commit()
+    groups = [
+        group for group in get_review_groups(conn)
+        if group['key_type'] == 'merchant' and group['key'].casefold() == 'shop'
+        and group['direction'] == 'out'
+    ]
+    assert {(group['currency'], group['total']) for group in groups} == {
+        ('MNT', 800), ('USD', 2500),
+    }

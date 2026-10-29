@@ -94,3 +94,33 @@ def test_fee_total_and_empty_date_range() -> None:
         assert total_fees(conn, '2030-01-01', None) == 0.0
     finally:
         conn.close()
+
+
+
+def test_report_scope_separates_accounts_and_currencies_and_includes_end_day() -> None:
+    conn = _report_connection()
+    try:
+        conn.executemany(
+            'INSERT INTO accounts(id, account_number, currency) VALUES (?,?,?)',
+            [(21, '111100000021', 'MNT'), (22, '222200000022', 'MNT'),
+             (23, '333300000023', 'USD')],
+        )
+        conn.executemany(
+            '''INSERT INTO transactions(account_id, txn_datetime, amount, direction, category_id)
+               VALUES (?,?,?,?,?)''',
+            [(21, '2026-11-30 23:59:59', -12500, 'out', 6),
+             (22, '2026-11-30 09:00:00', -7000, 'out', 6),
+             (23, '2026-11-30 23:59:59', -3000, 'out', 6)],
+        )
+        conn.commit()
+        first = monthly_summary(conn, '2026-11-30', '2026-11-30', 21, 'MNT')
+        assert first.to_dict('records') == [
+            {'month': '2026-11', 'income': 0.0, 'expense': 125.0, 'net': -125.0}
+        ]
+        second = monthly_summary(conn, '2026-11-30', '2026-11-30', 22, 'MNT')
+        assert second.iloc[0]['expense'] == 70.0
+        usd = monthly_summary(conn, '2026-11-30', '2026-11-30', None, 'USD')
+        assert usd.iloc[0]['expense'] == 30.0
+        assert total_fees(conn, '2026-11-30', '2026-11-30', 21, 'MNT') == 0.0
+    finally:
+        conn.close()

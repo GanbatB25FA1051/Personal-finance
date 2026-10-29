@@ -4,7 +4,7 @@ import sqlite3
 
 import pandas as pd
 import streamlit as st
-from core.classify import set_category
+from core.classify import set_category, set_category_active, update_rule
 from core.db import read_sql_query
 from ui import (
     category_label,
@@ -373,18 +373,10 @@ def render(conn: sqlite3.Connection) -> None:
                                 new_category_id,
                             )
                         for rule_id, new_category_id in rule_targets.items():
-                            conn.execute(
-                                '''UPDATE merchant_rules
-                                   SET category_id=?, is_active=1
-                                   WHERE id=?''',
-                                (new_category_id, rule_id),
+                            saved_count += update_rule(
+                                conn, rule_id, category_id=new_category_id,
+                                is_active=True,
                             )
-                            saved_count += conn.execute(
-                                '''UPDATE transactions
-                                   SET category_id=?
-                                   WHERE rule_id=? AND classified_by='rule' ''',
-                                (new_category_id, rule_id),
-                            ).rowcount
                             conn.execute(
                                 '''UPDATE ai_category_mappings
                                    SET category_id=?

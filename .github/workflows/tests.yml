@@ -1,0 +1,91 @@
+name: Tests
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q
+        env:
+          DATABASE_URL: ''
+          FINANCE_TEST_DATABASE_URL: ''
+
+  windows-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Clean Windows launcher smoke check
+        shell: pwsh
+        env:
+          FINANCE_APP_PASSWORD: ci-synthetic-password
+          FINANCE_APP_HEADLESS: 'true'
+          FINANCE_APP_PORT: '8517'
+          FINANCE_DB_PATH: ${{ runner.temp }}\finance-smoke.db
+        run: |
+          $stdout = Join-Path $env:RUNNER_TEMP 'finance-launcher-out.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'finance-launcher-err.log'
+          $process = Start-Process -FilePath $env:ComSpec `
+            -ArgumentList @('/c', 'run.bat') `
+            -WorkingDirectory $env:GITHUB_WORKSPACE `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
+            -PassThru -WindowStyle Hidden
+          try {
+            $healthy = $false
+            for ($i = 0; $i -lt 90; $i++) {
+              if ($process.HasExited) { break }
+              try {
+                $response = Invoke-WebRequest `
+                  -Uri 'http://127.0.0.1:8517/_stcore/health' `
+                  -TimeoutSec 2 -UseBasicParsing
+                if ($response.StatusCode -eq 200) { $healthy = $true; break }
+              } catch { Start-Sleep -Seconds 2 }
+            }
+            if (-not $healthy) {
+              if (Test-Path $stdout) { Get-Content $stdout }
+              if (Test-Path $stderr) { Get-Content $stderr }
+              throw 'run.bat did not start a healthy Streamlit server.'
+            }
+          } finally {
+            & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+          }
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-test-password
+          POSTGRES_DB: finance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d finance_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q
+        env:
+          DATABASE_URL: ''
+          FINANCE_TEST_DATABASE_URL: postgresql://postgres:synthetic-test-password@localhost:5432/finance_test
