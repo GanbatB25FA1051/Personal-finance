@@ -66,7 +66,7 @@ def test_bigint_migration_is_idempotent_and_preserves_data(postgres_test_conn):
     values = conn.execute(
         'SELECT amount, balance_after FROM transactions'
     ).fetchone()
-    assert tuple(values) == (12345, 99999)
+    assert (values['amount'], values['balance_after']) == (12345, 99999)
     for table, column in money_columns:
         row = conn.execute(
             '''SELECT data_type FROM information_schema.columns
