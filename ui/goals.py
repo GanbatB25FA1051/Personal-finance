@@ -11,6 +11,8 @@ from core.goals import (
     goal_monthly_plan,
     list_goals,
     save_goal,
+    record_goal_savings_movement,
+    list_goal_savings_movements,
 )
 from core.budget import next_month_start
 from core.models import to_minor
@@ -68,7 +70,7 @@ def _goal_form(
             value='' if goal is None else _amount_text(goal['target_amount']),
         )
         savings = right.text_input(
-            'Одоогийн хуримтлал (₮)',
+            'Эхлэх хуримтлал (₮)',
             value='0' if goal is None else _amount_text(goal['current_savings']),
         )
         other = left.text_input(
@@ -186,6 +188,70 @@ def render(conn: sqlite3.Connection) -> None:
         st.info('Зорилгын мэдээлэл нэмэхэд сар бүрийн төлөвлөгөө энд харагдана.')
         return
 
+    selected_label = st.session_state.get('goal_selection')
+    selected_id = next(
+        (int(row['id']) for row in existing if f"{row['name']} · #{row['id']}" == selected_label),
+        int(existing[0]['id']),
+    )
+    selected_goal = next(row for row in existing if int(row['id']) == selected_id)
+    movements = list_goal_savings_movements(conn, selected_id)
+    st.subheader(f"{selected_goal['name']} · хуримтлалын түүх")
+    current_minor = int(selected_goal['current_savings']) + sum(int(row['amount_minor']) for row in movements)
+    st.metric('Одоогийн хуримтлал', _format_minor(current_minor))
+    st.caption('Хөдөлгөөн нь зөвхөн зорилгын хуримтлалын бүртгэлд орно; банкны бодит зарлага үүсгэхгүй.')
+    with st.expander('Хуримтлалын хөдөлгөөн бүртгэх'):
+        with st.form(f'goal_movement_form_{selected_id}'):
+            movement_kind = st.selectbox('Хөдөлгөөний төрөл', ['Хуримтлал нэмэх', 'Хуримтлалаас хасах'], key=f'goal_movement_kind_{selected_id}')
+            movement_amount = st.text_input('Дүн (₮)', key=f'goal_movement_amount_{selected_id}')
+            movement_date = st.date_input('Огноо', value=date.today(), key=f'goal_movement_date_{selected_id}')
+            movement_note = st.text_input('Тайлбар', key=f'goal_movement_note_{selected_id}')
+            transfer_rows = conn.execute(
+                '''SELECT t.id, t.txn_datetime, t.amount, t.direction, t.raw_description
+                   FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+                   LEFT JOIN accounts a ON a.id=t.account_id
+                   WHERE COALESCE(NULLIF(a.currency,''),'MNT')='MNT'
+                     AND (c.type='transfer' OR EXISTS (
+                       SELECT 1 FROM transfer_pairs tp WHERE tp.outgoing_transaction_id=t.id
+                          OR tp.incoming_transaction_id=t.id
+                   )) AND NOT EXISTS (
+                       SELECT 1 FROM goal_savings_movements gm WHERE gm.source_transaction_id=t.id
+                   ) ORDER BY t.txn_datetime DESC LIMIT 500'''
+            ).fetchall()
+            transfer_options = {'Гүйлгээ холбохгүй': None}
+            for row in transfer_rows:
+                label = f"{str(row['txn_datetime'])[:10]} · {_format_minor(abs(row['amount']))} · {str(row['raw_description'] or 'шилжүүлэг')[:40]} · #{row['id']}"
+                transfer_options[label] = int(row['id'])
+            transfer_label = st.selectbox('Холбогдох шилжүүлэг (заавал биш)', list(transfer_options), key=f'goal_movement_source_{selected_id}')
+            movement_submitted = st.form_submit_button('Хөдөлгөөн хадгалах')
+        if movement_submitted:
+            try:
+                amount_minor = to_minor(Decimal(movement_amount.strip()))
+                if movement_kind == 'Хуримтлалаас хасах':
+                    amount_minor = -amount_minor
+                record_goal_savings_movement(
+                    conn, selected_id, amount_minor, movement_date.isoformat(),
+                    movement_note, transfer_options[transfer_label],
+                )
+                st.success('Хуримтлалын хөдөлгөөн бүртгэгдлээ.')
+                st.rerun()
+            except (ValueError, InvalidOperation) as exc:
+                st.error(str(exc))
+    if movements:
+        movement_frame = pd.DataFrame([dict(row) for row in movements])
+        movement_frame['Дүн'] = movement_frame['amount_minor'].map(_format_minor)
+        movement_frame['Гүйлгээ'] = movement_frame['source_transaction_id'].map(
+            lambda value: '—' if pd.isna(value) else f'#{int(value)}'
+        )
+        st.dataframe(
+            movement_frame[['movement_date', 'Дүн', 'note', 'Гүйлгээ']],
+            hide_index=True,
+            column_config={
+                'movement_date': 'Огноо', 'note': 'Тайлбар',
+            },
+        )
+    else:
+        st.info('Хуримтлалын хөдөлгөөний түүх хараахан алга.')
+
     month = st.date_input(
         'Төлөвлөгөөний төсвийн сар',
         value=next_month_start(),
@@ -210,6 +276,7 @@ def render(conn: sqlite3.Connection) -> None:
     display = plans.copy()
     display['target'] = display['target_date']
     display['remaining'] = display['remaining_target_minor'].map(_format_minor)
+    display['progress'] = display['progress_percent'].map(lambda value: f'{value:,.1f}%')
     display['months'] = display['months_to_target'].map(
         lambda value: 'Хугацаа хэтэрсэн' if value == 0 else f'{value} сар'
     )
@@ -222,6 +289,7 @@ def render(conn: sqlite3.Connection) -> None:
                 'name',
                 'target',
                 'remaining',
+                'progress',
                 'months',
                 'saving',
                 'loan',
@@ -234,6 +302,7 @@ def render(conn: sqlite3.Connection) -> None:
             'name': 'Зорилго',
             'target': 'Хүрэх огноо',
             'remaining': 'Бүрдүүлэх дүн',
+            'progress': 'Явц',
             'months': 'Үлдсэн хугацаа',
             'saving': 'Сарын хуримтлал',
             'loan': 'Сарын зээл',

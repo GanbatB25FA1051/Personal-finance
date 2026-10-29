@@ -9,6 +9,7 @@ from core.budget import (
     get_budget_categories,
     next_month_start,
     save_budgets,
+    previous_budget_month, preview_budget_copy, copy_budget_month,
 )
 from core.db import get_conn, init_db
 
@@ -101,5 +102,87 @@ def test_budget_rejects_invalid_month_and_non_expense_categories() -> None:
             save_budgets(conn, '2026-11', {salary_id: 100})
         with pytest.raises(ValueError, match='non-negative'):
             save_budgets(conn, '2026-11', {groceries_id: -100})
+    finally:
+        conn.close()
+
+
+
+def test_budget_scope_separates_currency_and_account() -> None:
+    conn, groceries_id, _ = _budget_connection()
+    try:
+        conn.executemany(
+            'INSERT INTO accounts(id, account_number, currency) VALUES (?,?,?)',
+            [(31, '111100000031', 'MNT'), (32, '222200000032', 'USD')],
+        )
+        conn.executemany(
+            '''INSERT INTO transactions(account_id, txn_datetime, amount, direction, category_id)
+               VALUES (?,?,?,?,?)''',
+            [(31, '2026-11-30 23:59:00', -1000, 'out', groceries_id),
+             (32, '2026-11-30 23:59:00', -2500, 'out', groceries_id)],
+        )
+        conn.commit()
+        save_budgets(conn, '2026-11', {groceries_id: 5000}, 31, 'MNT')
+        save_budgets(conn, '2026-11', {groceries_id: 9000}, 32, 'USD')
+        mnt = budget_comparison(conn, '2026-11', 31, 'MNT').set_index('category')
+        usd = budget_comparison(conn, '2026-11', 32, 'USD').set_index('category')
+        assert mnt.loc['Groceries / Food', 'budget_minor'] == 5000
+        assert mnt.loc['Groceries / Food', 'actual_minor'] == 1000
+        assert usd.loc['Groceries / Food', 'budget_minor'] == 9000
+        assert usd.loc['Groceries / Food', 'actual_minor'] == 2500
+        assert next(row for row in get_budget_categories(conn, '2026-11', 'MNT', 31) if row['id'] == groceries_id)['amount'] == 5000
+    finally:
+        conn.close()
+
+
+def test_previous_month_rolls_over_year_and_copy_preserves_conflicts() -> None:
+    conn, groceries_id, _ = _budget_connection()
+    try:
+        assert previous_budget_month('2027-01') == '2026-12'
+        save_budgets(conn, '2026-12', {groceries_id: 50000})
+        save_budgets(conn, '2027-01', {groceries_id: 70000})
+        preview = preview_budget_copy(conn, '2026-12', '2027-01')
+        assert preview[0]['has_target'] == 1
+        result = copy_budget_month(conn, '2026-12', '2027-01')
+        assert result == {'copied': 0, 'skipped_conflicts': 1}
+        current = {row['id']: row['amount'] for row in get_budget_categories(conn, '2027-01')}
+        assert current[groceries_id] == 70000
+    finally:
+        conn.close()
+
+
+def test_copy_budget_month_copies_missing_targets_across_december_january() -> None:
+    conn, groceries_id, _ = _budget_connection()
+    try:
+        save_budgets(conn, '2026-12', {groceries_id: 50000})
+        assert preview_budget_copy(conn, '2026-12', '2027-01')[0]['has_target'] == 0
+        assert copy_budget_month(conn, '2026-12', '2027-01') == {
+            'copied': 1, 'skipped_conflicts': 0,
+        }
+        copied = {row['id']: row['amount'] for row in get_budget_categories(conn, '2027-01')}
+        assert copied[groceries_id] == 50000
+    finally:
+        conn.close()
+
+
+def test_budget_actual_includes_leap_day_and_uncategorized_has_no_remaining_ratio() -> None:
+    conn, groceries_id, _ = _budget_connection()
+    try:
+        conn.execute(
+            '''INSERT INTO transactions(txn_datetime, amount, direction, category_id)
+               VALUES ('2028-02-29 23:59:00', -2500, 'out', ?)''',
+            (groceries_id,),
+        )
+        conn.execute(
+            '''INSERT INTO transactions(txn_datetime, amount, direction, category_id)
+               VALUES ('2028-02-29 23:58:00', -1000, 'out', NULL)'''
+        )
+        conn.commit()
+        save_budgets(conn, '2028-02', {groceries_id: 10000})
+        result = budget_comparison(conn, '2028-02').set_index('category')
+        assert result.loc['Groceries / Food', 'actual_minor'] == 2500
+        assert result.loc['Ангилалгүй', 'actual_minor'] == 1000
+        assert result.loc['Ангилалгүй', 'remaining_minor'] == 0
+        import pandas as pd
+        assert pd.isna(result.loc['Ангилалгүй', 'used_percent'])
     finally:
         conn.close()

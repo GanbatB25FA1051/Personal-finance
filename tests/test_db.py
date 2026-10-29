@@ -11,6 +11,7 @@ from core.db import (
     get_conn,
     init_db,
     read_sql_query,
+    restore_db,
 )
 from core.models import to_minor
 
@@ -160,3 +161,244 @@ def test_backup_retention(tmp_path) -> None:
         backup_db(str(source), str(folder))
     assert len(list(folder.glob('finance_*.db'))) == 20
     assert unrelated.read_text(encoding='utf-8') == 'keep'
+
+
+def test_large_money_round_trips_as_integer_minor_units() -> None:
+    conn = get_conn(':memory:')
+    try:
+        init_db(conn)
+        amount_minor = 10_000_000_000  # 100,000,000.00 MNT
+        conn.execute(
+            "INSERT INTO transactions(amount, balance_after) VALUES (?, ?)",
+            (amount_minor, amount_minor),
+        )
+        row = conn.execute(
+            'SELECT amount, balance_after FROM transactions'
+        ).fetchone()
+        assert tuple(row) == (amount_minor, amount_minor)
+    finally:
+        conn.close()
+
+def test_file_connections_have_isolated_transactions(tmp_path) -> None:
+    path = tmp_path / 'finance.db'
+    first = get_conn(str(path))
+    second = get_conn(str(path))
+    try:
+        init_db(first)
+        first.execute(
+            "INSERT INTO accounts(account_number) VALUES ('first-account')"
+        )
+        assert second.execute(
+            'SELECT COUNT(*) FROM accounts'
+        ).fetchone()[0] == 0
+        first.commit()
+        assert second.execute(
+            'SELECT COUNT(*) FROM accounts'
+        ).fetchone()[0] == 1
+    finally:
+        first.close()
+        second.close()
+
+def test_postgres_adapter_executemany_does_not_request_ids() -> None:
+    query = _PostgresConnection._prepare(
+        'INSERT INTO budgets(budget_month, category_id, amount, updated_at) '
+        'VALUES (?, ?, ?, ?) ON CONFLICT(budget_month, category_id) DO NOTHING',
+        returning_id=False,
+    )
+    assert 'RETURNING' not in query
+    assert 'VALUES (%s, %s, %s, %s)' in query
+
+
+def test_postgres_adapter_keeps_non_id_returning_column() -> None:
+    query = _PostgresConnection._prepare(
+        'INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?) '
+        'RETURNING version'
+    )
+    assert query.endswith('RETURNING version')
+    assert 'RETURNING id' not in query
+
+
+
+def test_budget_scope_migration_preserves_existing_rows_and_is_idempotent() -> None:
+    conn = get_conn(':memory:')
+    try:
+        init_db(conn)
+        category_id = conn.execute(
+            "SELECT id FROM categories WHERE name='Groceries / Food'"
+        ).fetchone()[0]
+        conn.execute('DROP TABLE budgets')
+        conn.execute(
+            '''CREATE TABLE budgets (
+               budget_month TEXT NOT NULL,
+               category_id INTEGER NOT NULL REFERENCES categories(id),
+               amount INTEGER NOT NULL CHECK(amount >= 0),
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY (budget_month, category_id)
+            )'''
+        )
+        conn.execute(
+            'INSERT INTO budgets VALUES (?,?,?,?)',
+            ('2026-11', category_id, 123456, '2026-10-01'),
+        )
+        conn.execute('DELETE FROM schema_migrations WHERE version=2')
+        conn.commit()
+
+        init_db(conn)
+        init_db(conn)
+        row = conn.execute(
+            'SELECT amount, currency, account_scope FROM budgets '
+            'WHERE budget_month=? AND category_id=?',
+            ('2026-11', category_id),
+        ).fetchone()
+        assert tuple(row) == (123456, 'MNT', 'all')
+        assert conn.execute(
+            'SELECT COUNT(*) FROM schema_migrations WHERE version=2'
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+
+def test_classification_audit_type_migration_preserves_history() -> None:
+    conn = get_conn(':memory:')
+    try:
+        init_db(conn)
+        conn.execute('DROP TABLE classification_audit')
+        conn.execute(
+            '''CREATE TABLE classification_audit (
+               id INTEGER PRIMARY KEY,
+               entity_type TEXT NOT NULL CHECK(entity_type IN ('transaction','rule')),
+               entity_id INTEGER NOT NULL,
+               action TEXT NOT NULL,
+               old_values TEXT,
+               new_values TEXT,
+               changed_at TEXT NOT NULL
+            )'''
+        )
+        conn.execute(
+            "INSERT INTO classification_audit VALUES (1,'transaction',7,'manual_classify','{}','{}','2026-10-28')"
+        )
+        conn.execute('DELETE FROM schema_migrations WHERE version=3')
+        conn.commit()
+
+        init_db(conn)
+        conn.execute(
+            "INSERT INTO classification_audit(entity_type,entity_id,action,changed_at) VALUES ('category',9,'archive','2026-10-28')"
+        )
+        conn.commit()
+        assert conn.execute('SELECT COUNT(*) FROM classification_audit').fetchone()[0] == 2
+        assert conn.execute(
+            'SELECT COUNT(*) FROM schema_migrations WHERE version=3'
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_goal_planning_v4_migration_is_idempotent_and_preserves_existing_goal():
+    conn = get_conn(':memory:')
+    try:
+        init_db(conn)
+        goal_id = conn.execute(
+            """INSERT INTO goals(name, target_amount, current_savings, other_funding,
+                   loan_amount, annual_interest_rate, loan_term_months, loan_start_month,
+                   target_date, created_at, updated_at)
+               VALUES ('Өмнөх зорилго', 1000, 100, 0, 0, 0, 0, '2026-11',
+                       '2027-11-01', '2026-10-01', '2026-10-01') RETURNING id"""
+        ).fetchone()[0]
+        init_db(conn)
+        init_db(conn)
+        assert conn.execute('SELECT name FROM goals WHERE id=?', (goal_id,)).fetchone()[0] == 'Өмнөх зорилго'
+        assert conn.execute('SELECT COUNT(*) FROM schema_migrations WHERE version=4').fetchone()[0] == 1
+        assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='recurring_payment_matches'").fetchone()[0] == 'recurring_payment_matches'
+    finally:
+        conn.close()
+
+
+def test_ai_review_migrations_add_idempotency_and_approval_fields():
+    conn = get_conn(':memory:')
+    try:
+        init_db(conn)
+        init_db(conn)
+        run_columns = {row['name'] for row in conn.execute('PRAGMA table_info(ai_analysis_runs)')}
+        mapping_columns = {row['name'] for row in conn.execute('PRAGMA table_info(ai_expense_mappings)')}
+        assert 'request_fingerprint' in run_columns
+        assert {'approved_category_id', 'approved_at', 'applied_count'} <= mapping_columns
+        assert conn.execute('SELECT COUNT(*) FROM schema_migrations WHERE version IN (5,6)').fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_restore_protects_current_database_and_reconciles_count_and_total(tmp_path):
+    target = tmp_path / 'finance.db'
+    conn = get_conn(str(target))
+    try:
+        init_db(conn)
+        conn.execute('INSERT INTO transactions(amount) VALUES (?)', (12_345,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    snapshots = tmp_path / 'backups'
+    saved = backup_db(str(target), str(snapshots))
+    assert saved is not None
+
+    conn = get_conn(str(target))
+    try:
+        conn.execute('INSERT INTO transactions(amount) VALUES (?)', (67_890,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    safety_snapshot = restore_db(saved, str(target), str(snapshots))
+    assert safety_snapshot is not None
+    restored = get_conn(str(target))
+    protected = get_conn(safety_snapshot)
+    try:
+        restored_values = restored.execute(
+            'SELECT COUNT(*), COALESCE(SUM(amount),0) FROM transactions'
+        ).fetchone()
+        protected_values = protected.execute(
+            'SELECT COUNT(*), COALESCE(SUM(amount),0) FROM transactions'
+        ).fetchone()
+        assert tuple(restored_values) == (1, 12_345)
+        assert tuple(protected_values) == (2, 80_235)
+    finally:
+        restored.close()
+        protected.close()
+
+
+def test_invalid_restore_does_not_replace_or_back_up_current_database(tmp_path):
+    target = tmp_path / 'finance.db'
+    conn = get_conn(str(target))
+    try:
+        init_db(conn)
+        conn.execute('INSERT INTO transactions(amount) VALUES (123)')
+        conn.commit()
+    finally:
+        conn.close()
+    invalid = tmp_path / 'not-a-database.db'
+    invalid.write_text('invalid', encoding='utf-8')
+
+    with pytest.raises((ValueError, sqlite3.DatabaseError)):
+        restore_db(str(invalid), str(target), str(tmp_path / 'backups'))
+
+    check = get_conn(str(target))
+    try:
+        assert check.execute('SELECT SUM(amount) FROM transactions').fetchone()[0] == 123
+    finally:
+        check.close()
+    backup_folder = tmp_path / 'backups'
+    assert not backup_folder.exists() or not list(backup_folder.glob('finance_*.db'))
+
+
+def test_local_backup_is_not_reported_for_cloud_database(tmp_path, monkeypatch):
+    source = tmp_path / 'finance.db'
+    conn = get_conn(str(source))
+    init_db(conn)
+    conn.close()
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://synthetic.invalid/db')
+
+    assert backup_db(str(source), str(tmp_path / 'backups')) is None
+    with pytest.raises(RuntimeError, match='disabled'):
+        restore_db(str(source), str(tmp_path / 'restore.db'))
+    assert not (tmp_path / 'backups').exists()

@@ -10,6 +10,10 @@ from core.classify import (
     apply_rules,
     classify_remaining,
     learn_rules_from_manual,
+    preview_rule,
+    update_rule,
+    delete_rule,
+    reapply_rules,
 )
 from core.db import read_sql_query
 from ui import (
@@ -27,60 +31,60 @@ def render(conn: sqlite3.Connection) -> None:
     active_categories = {
         row['name']: row['id']
         for row in conn.execute(
-            'SELECT id, name FROM categories WHERE is_active=1 ORDER BY name'
+            'SELECT id, name, type FROM categories WHERE is_active=1 ORDER BY name'
         )
     }
-    all_categories = {
-        row['name']: row['id']
-        for row in conn.execute('SELECT id, name FROM categories ORDER BY name')
+    category_types = {
+        row['name']: row['type']
+        for row in conn.execute(
+            'SELECT name, type FROM categories WHERE is_active=1 ORDER BY name'
+        )
     }
-
-    with st.form('add_rule'):
-        match_type = st.selectbox(
-            'Тохирлын төрөл',
-            ['merchant_exact', 'counterparty_account', 'contains', 'regex'],
-            format_func=lambda value: MATCH_TYPE_LABELS[value],
-        )
-        pattern = st.text_input('Хайх утга')
-        direction = st.selectbox(
-            'Гүйлгээний чиглэл',
-            ['any', 'in', 'out'],
-            format_func=lambda value: DIRECTION_LABELS[value],
-        )
-        category_names = list(active_categories)
+    match_type = st.selectbox(
+        'Тохирлын төрөл',
+        ['merchant_exact', 'counterparty_account', 'contains', 'regex'],
+        format_func=lambda value: MATCH_TYPE_LABELS[value], key='new_rule_match_type',
+    )
+    pattern = st.text_input('Хайх утга', key='new_rule_pattern')
+    direction = st.selectbox(
+        'Гүйлгээний чиглэл', ['any', 'in', 'out'],
+        format_func=lambda value: DIRECTION_LABELS[value], key='new_rule_direction',
+    )
+    compatible = {
+        'any': {'transfer'}, 'in': {'income', 'transfer'},
+        'out': {'expense', 'fee', 'transfer'},
+    }[direction]
+    category_names = [name for name in active_categories
+                      if category_types[name] in compatible]
+    category = st.selectbox(
+        'Ангилал', category_names or ['Тохирох идэвхтэй ангилал алга'],
+        format_func=category_label, key='new_rule_category',
+        disabled=not category_names,
+    )
+    priority = st.number_input(
+        'Дараалал (бага тоо эхэлж хэрэгжинэ)', value=100, step=1,
+        key='new_rule_priority',
+    )
+    rule_preview = None
+    if category_names and pattern.strip():
+        try:
+            rule_preview = preview_rule(
+                conn, match_type, pattern, active_categories[category], direction
+            )
+            preview_total = (rule_preview['total'] + 50) // 100
+            st.caption(
+                f"Хамрах хүрээ: {rule_preview['count']} ангилаагүй гүйлгээ · "
+                f"{preview_total:,} ₮ · {DIRECTION_LABELS[direction]} · "
+                f"жишээ: {rule_preview['sample_desc'] or 'таарсан гүйлгээ алга'}"
+            )
+        except ValueError as exc:
+            st.warning(translate_rule_error(str(exc)))
+    if st.button('Дүрэм нэмэх', disabled=not category_names, key='add_rule_submit'):
         if category_names:
-            category = st.selectbox(
-                'Ангилал',
-                category_names,
-                format_func=category_label,
-            )
-        else:
-            category = None
-            st.selectbox(
-                'Ангилал',
-                ['Идэвхтэй ангилал алга'],
-                disabled=True,
-            )
-        priority = st.number_input(
-            'Дараалал (бага тоо эхэлж хэрэгжинэ)',
-            value=100,
-            step=1,
-        )
-        submitted = st.form_submit_button(
-            'Дүрэм нэмэх',
-            disabled=not active_categories,
-        )
-        if submitted and category is not None:
             try:
                 with conn:
-                    add_rule(
-                        conn,
-                        match_type,
-                        pattern,
-                        active_categories[category],
-                        direction,
-                        int(priority),
-                    )
+                    add_rule(conn, match_type, pattern, active_categories[category],
+                             direction, int(priority))
                 st.success('Дүрэм нэмэгдлээ.')
                 st.rerun()
             except ValueError as exc:
@@ -110,7 +114,7 @@ def render(conn: sqlite3.Connection) -> None:
         rules['direction'] = rules['direction'].map(DIRECTION_LABELS)
         rules['category'] = rules['category'].map(category_label)
         rules.insert(0, 'Устгах', False)
-        category_options = [category_label(name) for name in all_categories]
+        category_options = list(dict.fromkeys([*[category_label(name) for name in active_categories], *rules['category'].tolist()]))
         edited = st.data_editor(
             rules,
             hide_index=True,
@@ -150,19 +154,14 @@ def render(conn: sqlite3.Connection) -> None:
                 with conn:
                     for _, row in edited.iterrows():
                         stored_category = category_name(row['category'])
-                        if stored_category not in all_categories:
-                            raise ValueError('Ангиллын сонголт буруу байна.')
+                        if stored_category not in active_categories:
+                            raise ValueError('Архивласан эсвэл буруу ангиллыг сонгосон байна.')
                         priority_value = int(row['priority'])
-                        conn.execute(
-                            '''UPDATE merchant_rules
-                               SET priority=?, is_active=?, category_id=?
-                               WHERE id=?''',
-                            (
-                                priority_value,
-                                int(bool(row['active'])),
-                                all_categories[stored_category],
-                                int(row['id']),
-                            ),
+                        update_rule(
+                            conn, int(row['id']),
+                            priority=priority_value,
+                            is_active=bool(row['active']),
+                            category_id=active_categories[stored_category],
                         )
                 st.success('Дүрмийн өөрчлөлтийг хадгаллаа.')
                 st.rerun()
@@ -185,14 +184,7 @@ def render(conn: sqlite3.Connection) -> None:
             ]
             with conn:
                 for rule_id in selected_ids:
-                    conn.execute(
-                        'UPDATE transactions SET rule_id=NULL WHERE rule_id=?',
-                        (rule_id,),
-                    )
-                    conn.execute(
-                        'DELETE FROM merchant_rules WHERE id=?',
-                        (rule_id,),
-                    )
+                    delete_rule(conn, rule_id)
             st.rerun()
     else:
         st.info('Одоогоор дүрэм нэмээгүй байна.')
@@ -238,10 +230,5 @@ def render(conn: sqlite3.Connection) -> None:
         key='reapply_all_rules',
     ):
         with conn:
-            conn.execute(
-                """UPDATE transactions
-                   SET category_id=NULL, rule_id=NULL, classified_by='none'
-                   WHERE classified_by='rule'"""
-            )
-            count = apply_rules(conn)
+            count = reapply_rules(conn)
         st.success(f'{count} гүйлгээг дүрмээр дахин ангиллаа.')

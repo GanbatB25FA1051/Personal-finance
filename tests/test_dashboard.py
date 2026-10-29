@@ -1,6 +1,7 @@
 """Test selectable dashboard filtering and local aggregations."""
 
 from core.db import get_conn, init_db
+from core.reports import monthly_summary
 from ui.reports import (
     _load_dashboard_data,
     _monthly_summary,
@@ -166,5 +167,30 @@ def test_dashboard_can_analyze_one_import_including_overlapping_rows() -> None:
             second_transaction,
             third_transaction,
         }
+    finally:
+        conn.close()
+
+
+
+def test_transaction_list_and_report_totals_share_scope_and_end_date() -> None:
+    conn = _dashboard_connection()
+    try:
+        conn.execute(
+            '''INSERT INTO transactions
+               (txn_datetime, amount, direction, raw_description, merchant_clean,
+                category_id, classified_by)
+               VALUES ('2026-02-28 23:59:59', -1250, 'out', 'late expense', 'Late', 9, 'manual')'''
+        )
+        conn.commit()
+        rows = _load_dashboard_data(
+            conn, '2026-02-28', '2026-02-28', ['Бүгд'], 'Бүгд',
+            currency='MNT',
+        )
+        assert rows['date'].tolist() == ['2026-02-28 23:59:59']
+        list_expense = int(-rows.loc[
+            (rows['amount'] < 0) & (rows['category_type'] != 'transfer'), 'amount'
+        ].sum())
+        report = monthly_summary(conn, '2026-02-28', '2026-02-28', currency='MNT')
+        assert list_expense == int(round(report.iloc[0]['expense'] * 100))
     finally:
         conn.close()

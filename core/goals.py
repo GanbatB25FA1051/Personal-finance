@@ -98,6 +98,14 @@ def save_goal(
         loan_start_month,
         target_date,
     )
+    if goal_id is not None:
+        movement_total = conn.execute(
+            'SELECT COALESCE(SUM(amount_minor),0) FROM goal_savings_movements WHERE goal_id=?',
+            (goal_id,),
+        ).fetchone()[0]
+        effective_savings = current_savings + int(movement_total)
+        if effective_savings < 0 or effective_savings + other_funding + loan_amount > target_amount:
+            raise ValueError('Эхлэх хуримтлалын өөрчлөлт хадгалсан хөдөлгөөний түүхтэй зөрчилдөнө.')
     updated_at = datetime.now().isoformat(timespec='seconds')
     with conn:
         if goal_id is None:
@@ -157,6 +165,87 @@ def delete_goal(conn: sqlite3.Connection, goal_id: int) -> None:
             raise ValueError('Goal was not found.')
 
 
+
+def record_goal_savings_movement(
+    conn: sqlite3.Connection,
+    goal_id: int,
+    amount_minor: int,
+    movement_date: str,
+    note: str = '',
+    source_transaction_id: int | None = None,
+) -> int:
+    """Record one signed savings movement without creating a transaction."""
+    if isinstance(amount_minor, bool) or not isinstance(amount_minor, int) or amount_minor == 0:
+        raise ValueError('Хуримтлалын хөдөлгөөн 0-ээс ялгаатай бүхэл дүн байна.')
+    try:
+        date.fromisoformat(movement_date)
+    except ValueError as exc:
+        raise ValueError('Хөдөлгөөний огноо YYYY-MM-DD байна.') from exc
+    goal = conn.execute(
+        'SELECT target_amount, current_savings, other_funding, loan_amount FROM goals WHERE id=?',
+        (goal_id,),
+    ).fetchone()
+    if goal is None:
+        raise ValueError('Зорилго олдсонгүй.')
+    movement_total = conn.execute(
+        'SELECT COALESCE(SUM(amount_minor),0) FROM goal_savings_movements WHERE goal_id=?',
+        (goal_id,),
+    ).fetchone()[0]
+    new_savings = int(goal['current_savings']) + int(movement_total) + amount_minor
+    if new_savings < 0:
+        raise ValueError('Хуримтлалын үлдэгдэл 0-ээс бага болохгүй.')
+    if new_savings + int(goal['other_funding']) + int(goal['loan_amount']) > int(goal['target_amount']):
+        raise ValueError('Хөдөлгөөн зорилгын санхүүжилтийн дээд дүнг давуулна.')
+    if source_transaction_id is not None:
+        source = conn.execute(
+            '''SELECT t.id, t.amount, t.direction, c.type,
+                      COALESCE(NULLIF(a.currency,''),'MNT') AS currency,
+                      EXISTS (SELECT 1 FROM transfer_pairs tp
+                              WHERE tp.outgoing_transaction_id=t.id
+                                 OR tp.incoming_transaction_id=t.id) AS paired
+               FROM transactions t LEFT JOIN categories c ON c.id=t.category_id
+               LEFT JOIN accounts a ON a.id=t.account_id
+               WHERE t.id=?''',
+            (source_transaction_id,),
+        ).fetchone()
+        if source is None:
+            raise ValueError('Холбох гүйлгээ олдсонгүй.')
+        if str(source['currency']).upper() != 'MNT':
+            raise ValueError('Зорилгын хуримтлал MNT байна; өөр валютын гүйлгээг холбохгүй.')
+        if source['type'] != 'transfer' and not source['paired']:
+            raise ValueError('Зөвхөн шилжүүлгийн гүйлгээг хуримтлалын хөдөлгөөнтэй холбож болно.')
+        if (amount_minor > 0 and source['direction'] != 'out') or (amount_minor < 0 and source['direction'] != 'in'):
+            raise ValueError('Хөдөлгөөний чиглэл холбосон шилжүүлэгтэй таарахгүй байна.')
+        if abs(amount_minor) != abs(int(source['amount'])):
+            raise ValueError('Хөдөлгөөний дүн холбосон шилжүүлгийн дүнтэй таарахгүй байна.')
+    try:
+        with conn:
+            row = conn.execute(
+                '''INSERT INTO goal_savings_movements(
+                       goal_id, movement_date, amount_minor, note,
+                       source_transaction_id, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?) RETURNING id''',
+                (goal_id, movement_date, amount_minor, note.strip(), source_transaction_id,
+                 datetime.now().isoformat(timespec='seconds')),
+            ).fetchone()
+    except Exception as exc:
+        if type(exc).__name__ in ('IntegrityError', 'UniqueViolation'):
+            raise ValueError('Энэ гүйлгээг өөр хуримтлалд аль хэдийн холбосон байна.') from exc
+        raise
+    return int(row['id'])
+
+
+def list_goal_savings_movements(conn: sqlite3.Connection, goal_id: int) -> list[Any]:
+    """Return a goal's savings ledger in chronological order."""
+    return conn.execute(
+        '''SELECT id, goal_id, movement_date, amount_minor, note,
+                  source_transaction_id, created_at
+           FROM goal_savings_movements WHERE goal_id=?
+           ORDER BY movement_date, id''',
+        (goal_id,),
+    ).fetchall()
+
+
 def monthly_loan_payment(
     principal_minor: int,
     annual_interest_rate: Decimal,
@@ -192,17 +281,25 @@ def goal_monthly_plan(
         raise ValueError('Budget month must use YYYY-MM format.') from exc
 
     goals = read_sql_query(
-        '''SELECT id, name, target_amount, current_savings, other_funding,
-                  loan_amount, annual_interest_rate, loan_term_months,
-                  loan_start_month, target_date
-           FROM goals
-           ORDER BY target_date, id''',
+        '''SELECT g.id, g.name, g.target_amount, g.current_savings,
+                  g.current_savings + COALESCE(m.saved_minor,0) AS effective_savings_minor,
+                  g.other_funding, g.loan_amount, g.annual_interest_rate,
+                  g.loan_term_months, g.loan_start_month, g.target_date
+           FROM goals AS g
+           LEFT JOIN (
+               SELECT goal_id, SUM(amount_minor) AS saved_minor
+               FROM goal_savings_movements GROUP BY goal_id
+           ) AS m ON m.goal_id=g.id
+           ORDER BY g.target_date, g.id''',
         conn,
     )
     columns = [
         'id',
         'name',
         'target_date',
+        'current_savings_minor',
+        'funded_minor',
+        'progress_percent',
         'remaining_target_minor',
         'months_to_target',
         'monthly_saving_minor',
@@ -221,7 +318,7 @@ def goal_monthly_plan(
         remaining = max(
             0,
             int(row['target_amount'])
-            - int(row['current_savings'])
+            - int(row['effective_savings_minor'])
             - int(row['other_funding'])
             - int(row['loan_amount']),
         )
@@ -255,10 +352,10 @@ def goal_monthly_plan(
                     loan_months,
                 )
         status = (
-            'Хугацаа хэтэрсэн'
-            if selected_index > target_index and remaining
-            else 'Санхүүжилт бүрдсэн'
+            'Бүрэн санхүүжсэн'
             if remaining == 0
+            else 'Хугацаа хэтэрсэн'
+            if selected_index > target_index
             else 'Төлөвлөж байна'
         )
         plans.append(
@@ -266,6 +363,17 @@ def goal_monthly_plan(
                 'id': int(row['id']),
                 'name': row['name'],
                 'target_date': row['target_date'],
+                'current_savings_minor': int(row['effective_savings_minor']),
+                'funded_minor': (
+                    int(row['effective_savings_minor'])
+                    + int(row['other_funding']) + int(row['loan_amount'])
+                ),
+                'progress_percent': (
+                    min(100.0, (
+                        int(row['effective_savings_minor'])
+                        + int(row['other_funding']) + int(row['loan_amount'])
+                    ) / int(row['target_amount']) * 100)
+                ),
                 'remaining_target_minor': remaining,
                 'months_to_target': months,
                 'monthly_saving_minor': saving,

@@ -5,7 +5,15 @@ A local, single-user personal finance app for Python 3.11+.
 ## Install and run
 
 On Windows, double-click `run.bat`. It creates `.venv`, installs requirements
-the first time, and starts the app in your browser.
+on first run, and starts the app in your browser. If `FINANCE_APP_PASSWORD` is
+not already set in the process environment, the launcher securely prompts for
+a local password without echoing it. The same required password check applies
+to local and hosted use; there is no password bypass. Do not store passwords in
+source control or CI. The launcher accepts `FINANCE_APP_HEADLESS=true` and
+`FINANCE_APP_PORT` for smoke checks; normal use opens a browser on port 8501.
+If Windows Application Control blocks a native package inside `.venv`, the
+launcher tries the installed Python environment instead. If that is also blocked,
+ask your administrator to approve the package location; do not disable the policy.
 
 For the hosted My Finance application on Windows, double-click `My Finance.bat`.
 It opens the Render app in an Edge or Chrome app-style window and uses the
@@ -15,7 +23,7 @@ This launcher is not an offline or standalone `.exe` application.
 To run manually from this folder:
 
 ```powershell
-python -m venv .venv
+python -m venv --system-site-packages .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python -m streamlit run app.py --server.headless false --browser.gatherUsageStats false
@@ -23,7 +31,7 @@ python -m streamlit run app.py --server.headless false --browser.gatherUsageStat
 
 ## Prepare a Render deployment
 
-The app uses local SQLite when `DATABASE_URL` is not set. For Render, configure
+The app uses local SQLite when `DATABASE_URL` is not set. It refuses to start on Render without `DATABASE_URL` so it cannot silently create a blank database on Render's temporary disk. For Render, configure
 `DATABASE_URL` with a Neon PostgreSQL connection URL and set
 `FINANCE_APP_PASSWORD` as a Render secret. Never commit either value.
 
@@ -38,6 +46,16 @@ python -m core.migrate_to_neon --source finance.db
 The migration stops if Neon already contains application data. It copies the
 existing SQLite records and verifies table row counts. Keep the original
 `finance.db` and a backup until you confirm the deployed data is correct.
+
+Render Free web services sleep when idle and have temporary local storage; local SQLite, backups, and workbook files would be lost on a restart or spin-down. Keep the existing Neon PostgreSQL `DATABASE_URL` on the Render service. Imported workbooks are stored in that database. Do not create a new Neon database or replace the existing service variables when deploying this branch.
+
+Render service settings:
+
+- Runtime: Python 3 (the repository uses Python 3.11 in CI)
+- Build command: `pip install -r requirements.txt`
+- Start command: `streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true`
+- Plan: Free
+- Required secrets in the Render Environment page: `DATABASE_URL` (existing Neon URL) and `FINANCE_APP_PASSWORD` (login password)
 
 Render's Streamlit start command is:
 
@@ -91,24 +109,59 @@ actual transaction expenses. Loan calculations are estimates, not lender quotes.
 
 ## Back up and restore
 
-The app backs up before imports. **Backup now** is also available in the
-sidebar. The `backups/` folder keeps the 20 most recent snapshots.
+SQLite databases are snapshotted before imports. **Backup now** is also
+available in the sidebar. Each snapshot is created consistently, checked with
+SQLite integrity validation, and the `backups/` folder retains the 20 newest
+snapshots. The app does not claim a local backup succeeded when `DATABASE_URL`
+selects PostgreSQL.
 
-To restore, stop the app, preserve `finance.db`, copy a chosen backup into the
-project folder as `finance.db`, then restart. Keep `imported_statements/` for
-statement re-imports.
+To restore SQLite, stop the app first, then run this from the project folder:
+
+```powershell
+python -m core.restore_sqlite --backup backups\finance_YYYYMMDD_HHMMSS.db --database finance.db
+```
+
+The restore tool asks for an explicit `RESTORE` confirmation, validates the
+snapshot, saves the current database as a safety snapshot, validates a staged
+copy, then replaces the database. Keep `imported_statements/` for statement
+re-imports. The automated test restores a synthetic SQLite backup and checks
+transaction counts and summed amounts against the saved values.
+
+### Neon PostgreSQL backup and restore
+
+The application does not create local backup files for Neon and does not manage
+Neon backups. Check the project's Neon console for the backup/PITR window and
+plan-specific options before relying on them. Neon provides snapshot restore
+that creates a branch; restore can be previewed there before finalizing it to
+replace the original branch. Configurable scheduled snapshots require a paid
+plan according to Neon API documentation. This repository has no Neon project
+credentials, so the live project's plan, retention, and restore permissions
+have not been verified. Use Neon Console/API for production recovery; do not
+point the SQLite restore tool at a Neon database.
+
+References: [Neon restore snapshot API](https://api-docs.neon.tech/reference/restoresnapshot),
+[Neon backup schedule API](https://api-docs.neon.tech/reference/setsnapshotschedule).
+
+## Continuous integration
+
+GitHub Actions runs the full synthetic SQLite suite, starts a clean Windows
+launcher smoke check, and runs PostgreSQL integration tests against a temporary
+Postgres 16 service. The PostgreSQL fixture creates and removes an isolated
+schema. CI uses synthetic credentials and data only; it does not use production
+secrets or deploy the app.
 
 ## Privacy
 
 Statements, including the original uploaded Excel workbooks, are stored in the
-configured database and are not encrypted. Backups are local. Unless you click
+configured database and are not encrypted. SQLite backups are local; Neon backups are managed separately. Unless you click
 the optional AI analysis, no transaction data is sent to OpenAI.
 It sends selected-period expense dates, amounts, descriptions, and category
 names to OpenAI; account/balance columns and the workbook are excluded, but
 details inside descriptions may be sent. Provider data terms apply. Enable AI
-in PowerShell with `setx OPENAI_API_KEY "YOUR_API_KEY"` and restart. Never put
-the key in code or chat. High-confidence results become local rules; uncertain
-results remain for review. **AI шинжилгээ** shows period-specific expense
+in PowerShell with `$env:OPENAI_API_KEY = "YOUR_API_KEY"` for the current
+session. Never put the key in code or chat. AI suggestions are reviewed and
+approved by default; separate auto-apply is optional. **AI шинжилгээ** shows
+period-specific expense
 totals by category and merchant, counts, confidence, and reasons; results are
 saved locally. Imported workbooks are excluded from version control.
 Streamlit usage statistics are disabled. Files and backups are not encrypted.

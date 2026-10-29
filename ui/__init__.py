@@ -77,6 +77,14 @@ def translate_import_message(message: str) -> str:
         'Invalid period_end metadata': 'Хуулгын дуусах огноо буруу байна.',
         'Missing required statement columns':
             'Хуулгын шаардлагатай баганууд дутуу байна.',
+        'Account number was not found': 'Дансны дугаар хуулгад алга.',
+        'Currency code was not found': 'Валютын код хуулгад алга.',
+        'Statement control totals could not be read':
+            'Хуулгын нийт дүнг уншиж чадсангүй.',
+        'Import warnings require explicit confirmation':
+            'Анхааруулгыг зөвшөөрөхөө баталгаажуулна уу.',
+        'Statement data changed after preview; create a new preview before importing.':
+            'Хуулгын мэдээлэл өөрчлөгдсөн байна. Дахин шалгаад импортлоно уу.',
         'Statement header not found': 'Хуулгын баганын гарчиг олдсонгүй.',
         'This exact file was already imported':
             'Энэ файлыг өмнө нь оруулсан байна.',
@@ -98,9 +106,19 @@ def translate_import_message(message: str) -> str:
             f'{row_balance.group(1)}-р мөр: эхний үлдэгдэл дээр гүйлгээний '
             'дүнг нэмэхэд эцсийн үлдэгдэлтэй таарахгүй байна.'
         )
-    row_invalid = re.fullmatch(r'Row (\d+): invalid statement data \(.*\)', message)
-    if row_invalid:
-        return f'{row_invalid.group(1)}-р мөрийн хуулгын мэдээлэл буруу байна.'
+    row_skipped = re.fullmatch(
+        r'Row (\d+): invalid statement data; row skipped', message
+    )
+    if row_skipped:
+        return f'{row_skipped.group(1)}-р мөрийн мэдээлэл буруу тул алгаслаа.'
+    positive_debit = re.fullmatch(
+        r'Row (\d+): positive debit normalized to a negative amount', message
+    )
+    if positive_debit:
+        return (
+            f'{positive_debit.group(1)}-р мөрийн зарлагыг сөрөг дүн болгон '
+            'зассан тул шалгана уу.'
+        )
     return 'Хуулгыг боловсруулах явцад алдаа эсвэл анхаарах зүйл гарлаа.'
 
 
