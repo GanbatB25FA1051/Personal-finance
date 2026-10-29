@@ -103,7 +103,13 @@ class _PostgresConnection:
         query = sql.replace('?', '%s')
         if re.match(r'\s*PRAGMA\b', query, re.IGNORECASE):
             return ''
-        if returning_id and re.match(r'\s*INSERT\b', query, re.IGNORECASE):
+        insert = re.match(
+            r'\s*INSERT(?:\s+OR\s+\w+)?\s+INTO\s+["`]?([\w.]+)',
+            query,
+            re.IGNORECASE,
+        )
+        table = insert.group(1).split('.')[-1].strip('"`').lower() if insert else ''
+        if returning_id and insert and table != 'schema_migrations':
             if not re.search(r'\bRETURNING\b', query, re.IGNORECASE):
                 query = query.rstrip().rstrip(';') + ' RETURNING id'
         return query

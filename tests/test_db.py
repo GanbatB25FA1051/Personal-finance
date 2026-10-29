@@ -209,6 +209,15 @@ def test_postgres_adapter_executemany_does_not_request_ids() -> None:
     assert 'VALUES (%s, %s, %s, %s)' in query
 
 
+def test_postgres_adapter_does_not_assume_migration_table_has_id() -> None:
+    query = _PostgresConnection._prepare(
+        'INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)'
+    )
+    assert query == (
+        'INSERT INTO schema_migrations(version, applied_at) VALUES (%s, %s)'
+    )
+
+
 def test_postgres_adapter_keeps_non_id_returning_column() -> None:
     query = _PostgresConnection._prepare(
         'INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?) '
