@@ -124,3 +124,10 @@ def test_transaction_transfer_panel_renders_empty_state(monkeypatch) -> None:
         assert headings == ['Өөрийн дансны шилжүүлэг']
     finally:
         conn.close()
+
+def test_transactions_page_has_shared_report_helpers():
+    from ui import transactions
+
+    assert callable(transactions.available_accounts)
+    assert callable(transactions.available_currencies)
+    assert callable(transactions.transaction_scope)

@@ -11,6 +11,7 @@ import streamlit as st
 from core.classify import preview_rule_scope, set_category
 from core.db import read_sql_query
 from core.models import to_minor
+from core.reports import available_accounts, available_currencies, transaction_scope
 from core.transfers import (
     available_transfer_transactions,
     confirmed_transfer_pairs,
