@@ -59,16 +59,16 @@ try:
         'AI_Analysis',
     ]
     page_labels = {
-        'Home': 'Нүүр хуудас',
-        'Upload': 'Хуулга оруулах',
-        'Review': 'Ангилах',
-        'Transactions': 'Гүйлгээнүүд',
-        'Rules': 'Дүрмүүд',
-        'Categories': 'Ангиллууд',
-        'Reports': 'Тайлан',
-        'Budget': 'Төсөв',
-        'Goals': 'Урт хугацааны зорилго',
-        'AI_Analysis': 'AI шинжилгээ',
+        'Home': ':material/home: Нүүр хуудас',
+        'Upload': ':material/upload_file: Хуулга оруулах',
+        'Review': ':material/rule: Ангилах',
+        'Transactions': ':material/receipt_long: Гүйлгээнүүд',
+        'Rules': ':material/tune: Дүрмүүд',
+        'Categories': ':material/category: Ангиллууд',
+        'Reports': ':material/analytics: Тайлан',
+        'Budget': ':material/account_balance_wallet: Төсөв',
+        'Goals': ':material/flag: Урт хугацааны зорилго',
+        'AI_Analysis': ':material/auto_awesome: AI шинжилгээ',
     }
     if 'next_page' in st.session_state:
         st.session_state['page'] = st.session_state.pop('next_page')
@@ -77,7 +77,7 @@ try:
         pages,
         key='page',
         format_func=lambda selected: (
-            f"Ангилах ({count})"
+            f":material/rule: Ангилах ({count})"
             if selected == 'Review'
             else page_labels[selected]
         ),
